@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { progressService } from './services/progressService';
 import { BibleVerse, SessionReadingProgress, ReadingState, User, UserProgress, UserSessionRecord } from './types';
-import { AVAILABLE_BOOKS, getVersesForSelection } from './constants';
+import { AVAILABLE_BOOKS, getVersesForSelection, getNextReadingStart, BOOK_ABBREVIATIONS_MAP } from './constants';
 import useSpeechRecognition from './hooks/useSpeechRecognition';
 import * as authService from './services/authService'; 
 import RecognitionDisplay from './components/RecognitionDisplay';
@@ -10,6 +10,14 @@ import AuthForm from './components/AuthForm';
 import ChapterSelector from './components/ChapterSelector'; 
 import Leaderboard from './components/Leaderboard'; 
 import { calculateSimilarity } from './utils';
+// import { BibleData, BibleBook, BibleChapter } from './types'; // Ensured this is commented out or removed
+import rawBibleData from './bible_fixed.json';
+
+// Define the type for the flat Bible data structure from bible_fixed.json
+type RawBibleDataType = { [key: string]: string; };
+
+// Make Bible data available globally in this module, cast to our correct local type
+const bibleData: RawBibleDataType = rawBibleData as RawBibleDataType;
 
 // Helper to normalize text for matching (simple version)
 const normalizeText = (text: string): string => {
@@ -21,23 +29,20 @@ const normalizeText = (text: string): string => {
 };
 
 const FUZZY_MATCH_LOOKBACK_FACTOR = 1.8; 
-const FUZZY_MATCH_SIMILARITY_THRESHOLD = 60; // 70에서 하향 조정. 발음이 어려운 단어 인식률 개선
-const MINIMUM_READ_LENGTH_RATIO = 0.9; // Must read at least 90% of the verse's length
+const FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT = 60; // 기본 유사도 기준 (안드로이드, PC 등)
+const FUZZY_MATCH_SIMILARITY_THRESHOLD_IOS = 50; // iOS를 위한 완화된 유사도 기준
+const MINIMUM_READ_LENGTH_RATIO_DEFAULT = 0.9; // 기본 길이 비율
+const MINIMUM_READ_LENGTH_RATIO_IOS = 0.8; // iOS를 위한 완화된 길이 비율
 const ABSOLUTE_READ_DIFFERENCE_THRESHOLD = 5; // Or be within 5 characters of the end
 
 const initialSessionProgress: SessionReadingProgress = {
-  currentBook: '',
-  currentChapter: 0,
-  currentVerseNum: 0,
-  sessionTargetVerses: [],
-  sessionTotalVersesCount: 0,
+  totalVersesInSession: 0,
   sessionCompletedVersesCount: 0,
-  sessionTargetChapters: [],
-  sessionCompletedChaptersCount: 0,
   sessionInitialSkipCount: 0,
 };
 
 const App: React.FC = () => {
+    const isIOS = useMemo(() => /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream, []);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userOverallProgress, setUserOverallProgress] = useState<UserProgress | null>(null);
   
@@ -46,12 +51,22 @@ const App: React.FC = () => {
   
   const [transcriptBuffer, setTranscriptBuffer] = useState('');
   const [matchedVersesContentForSession, setMatchedVersesContentForSession] = useState<string>(''); // Accumulated for current session display
+  const [isRetryingVerse, setIsRetryingVerse] = useState(false);
   const [readingState, setReadingState] = useState<ReadingState>(ReadingState.IDLE);
   
   const [sessionProgress, setSessionProgress] = useState<SessionReadingProgress>(initialSessionProgress);
 
   const [sessionCertificationMessage, setSessionCertificationMessage] = useState<string>('');
   const [appError, setAppError] = useState<string | null>(null);
+
+  const [overallCompletedChaptersCount, setOverallCompletedChaptersCount] = useState(0);
+  const [totalBibleChapters, setTotalBibleChapters] = useState(0);
+
+  // State for ChapterSelector default values, dynamically updated by user progress
+  const [selectedBookForSelector, setSelectedBookForSelector] = useState<string>(AVAILABLE_BOOKS[0]?.name || '');
+  const [startChapterForSelector, setStartChapterForSelector] = useState<number>(1);
+  const [endChapterForSelector, setEndChapterForSelector] = useState<number>(1);
+  const [startVerseForSelector, setStartVerseForSelector] = useState<number>(1);
 
   const { 
     isListening, 
@@ -62,6 +77,37 @@ const App: React.FC = () => {
     browserSupportsSpeechRecognition,
     resetTranscript 
   } = useSpeechRecognition({ lang: 'ko-KR' });
+
+  // Overall Bible Progress Effect (for initialization and total chapters)
+  useEffect(() => {
+    console.log('[Overall Progress Effect] currentUser:', currentUser);
+    const fetchOverallProgress = async () => {
+      if (currentUser && currentUser.username) {
+        console.log('[Overall Progress Effect] Fetching chapters for username:', currentUser.username);
+        setTotalBibleChapters(progressService.getTotalChaptersInScope());
+        try {
+          const completedChapters = await progressService.getCompletedChapters(currentUser.username);
+          setOverallCompletedChaptersCount(completedChapters.length);
+        } catch (error) {
+          console.error('Error fetching overall completed chapters:', error);
+          setOverallCompletedChaptersCount(0);
+        }
+      } else {
+        console.log('[Overall Progress Effect] No currentUser or username, resetting counts.');
+        setOverallCompletedChaptersCount(0);
+        setTotalBibleChapters(0);
+      }
+    };
+    fetchOverallProgress();
+  }, [currentUser]);
+
+  // Effect to handle retrying a verse after STT has fully stopped
+  useEffect(() => {
+    if (isRetryingVerse && !isListening) {
+      startListening();
+      setIsRetryingVerse(false);
+    }
+  }, [isRetryingVerse, isListening, startListening]);
 
   // Authentication Effect
   useEffect(() => {
@@ -77,6 +123,37 @@ const App: React.FC = () => {
     }
   }, []);
 
+  // Effect to set default chapter selection based on user progress for "continue reading"
+  useEffect(() => {
+    if (currentUser) {
+      const nextRead = getNextReadingStart(userOverallProgress && userOverallProgress.lastReadBook ? { book: userOverallProgress.lastReadBook, chapter: userOverallProgress.lastReadChapter, verse: userOverallProgress.lastReadVerse } : null);
+      if (nextRead) {
+        setSelectedBookForSelector(nextRead.book);
+        setStartChapterForSelector(nextRead.chapter);
+        setEndChapterForSelector(nextRead.chapter); // For "continue reading", start and end chapter are the same
+        setStartVerseForSelector(nextRead.verse);
+      } else {
+        // End of Bible or AVAILABLE_BOOKS might be initially empty, default to first book/chapter
+        const firstBook = AVAILABLE_BOOKS[0];
+        if (firstBook) {
+          setSelectedBookForSelector(firstBook.name);
+          setStartChapterForSelector(1);
+          setEndChapterForSelector(1);
+          setStartVerseForSelector(1);
+        }
+      }
+    } else {
+      // No user logged in, default to Genesis 1 or first available book
+      const firstBook = AVAILABLE_BOOKS[0];
+      if (firstBook) {
+        setSelectedBookForSelector(firstBook.name);
+        setStartChapterForSelector(1);
+        setEndChapterForSelector(1);
+        setStartVerseForSelector(1);
+      }
+    }
+  }, [userOverallProgress, currentUser]);
+
   const handleAuth = async (username: string) => {
     const user = authService.loginUser(username);
     if (user) {
@@ -91,6 +168,10 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
+    if (readingState === ReadingState.LISTENING) {
+      handleStopReadingAndSave();
+    }
+    
     authService.logoutUser();
     setCurrentUser(null);
     setUserOverallProgress(null);
@@ -110,15 +191,18 @@ const App: React.FC = () => {
   }, [currentVerseIndexInSession, sessionTargetVerses]);
 
   useEffect(() => {
-    if (sttTranscript) {
-      setTranscriptBuffer(sttTranscript); 
-    }
+    // Always update transcriptBuffer with the latest sttTranscript,
+    // including when sttTranscript becomes empty after a reset.
+    setTranscriptBuffer(sttTranscript);
   }, [sttTranscript]);
   
   useEffect(() => {
     if (!currentTargetVerseForSession || transcriptBuffer.length === 0 || readingState !== ReadingState.LISTENING) {
       return;
     }
+
+    const similarityThreshold = isIOS ? FUZZY_MATCH_SIMILARITY_THRESHOLD_IOS : FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT;
+    const minLengthRatio = isIOS ? MINIMUM_READ_LENGTH_RATIO_IOS : MINIMUM_READ_LENGTH_RATIO_DEFAULT;
 
     const normalizedTargetVerseText = normalizeText(currentTargetVerseForSession.text);
     const normalizedBuffer = normalizeText(transcriptBuffer);
@@ -133,10 +217,13 @@ const App: React.FC = () => {
     const similarity = calculateSimilarity(normalizedTargetVerseText, bufferPortionToCompare);
 
     // 매칭 성공 시에만 다음 절로 진행
-    const isLengthSufficientByRatio = bufferPortionToCompare.length >= normalizedTargetVerseText.length * MINIMUM_READ_LENGTH_RATIO;
+    const isLengthSufficientByRatio = bufferPortionToCompare.length >= normalizedTargetVerseText.length * minLengthRatio;
     const isLengthSufficientByAbsoluteDiff = (normalizedTargetVerseText.length - bufferPortionToCompare.length) <= ABSOLUTE_READ_DIFFERENCE_THRESHOLD && bufferPortionToCompare.length > 0;
 
-    if (similarity >= FUZZY_MATCH_SIMILARITY_THRESHOLD && (isLengthSufficientByRatio || isLengthSufficientByAbsoluteDiff)) {
+    console.log(`[App.tsx] Matching Details - Platform: ${isIOS ? 'iOS' : 'Other'}, Similarity: ${similarity} (Threshold: ${similarityThreshold}), LengthRatioSufficient: ${isLengthSufficientByRatio}, LengthAbsoluteSufficient: ${isLengthSufficientByAbsoluteDiff}`);
+    console.log(`[App.tsx] Comparing Buffer: "${bufferPortionToCompare}" with Target: "${normalizedTargetVerseText}"`);
+    if (similarity >= similarityThreshold && (isLengthSufficientByRatio || isLengthSufficientByAbsoluteDiff)) {
+      console.log(`[App.tsx] Verse matched! Index: ${currentVerseIndexInSession}, Target length: ${sessionTargetVerses.length}`);
       setMatchedVersesContentForSession(prev => prev + `${currentTargetVerseForSession.book} ${currentTargetVerseForSession.chapter}:${currentTargetVerseForSession.verse} - ${currentTargetVerseForSession.text}\n`);
       
       const newTotalCompletedInSelection = currentVerseIndexInSession + 1; // Count from start of selection array
@@ -148,24 +235,13 @@ const App: React.FC = () => {
         const chapterKey = `${verse.book}-${verse.chapter}`;
         chaptersEncountered.add(chapterKey);
       }
-      fullyCompletedChaptersInSession = Array.from(chaptersEncountered).filter(chKey => {
-        const [book, chapterStr] = chKey.split('-');
-        const chapter = parseInt(chapterStr);
-        const chapterInfo = sessionProgress.sessionTargetChapters.find(tc => tc.book === book && tc.chapter === chapter);
-        if (!chapterInfo) return false;
-        const versesInThisChapterInSelection = sessionTargetVerses.filter(v => v.book === book && v.chapter === chapter);
-        const versesInThisChapterFromSelection = sessionTargetVerses.slice(0, newTotalCompletedInSelection).filter(v => v.book === book && v.chapter === chapter);
-        return versesInThisChapterFromSelection.length === versesInThisChapterInSelection.length;
-      }).length;
-
-      setSessionProgress(prev => ({ 
+      setSessionProgress(prev => ({
         ...prev,
-        sessionCompletedVersesCount: newTotalCompletedInSelection, // Total "done" from start of selection
-        sessionCompletedChaptersCount: fullyCompletedChaptersInSession,
+        sessionCompletedVersesCount: newTotalCompletedInSelection,
       }));
 
-      // 마지막 절까지 실제로 읽었을 때만 세션 종료
-      if (newTotalCompletedInSelection >= sessionTargetVerses.length) { 
+      // We check against the current index. If it's the last one, the session is complete.
+      if (currentVerseIndexInSession >= sessionTargetVerses.length - 1) { 
         setReadingState(ReadingState.SESSION_COMPLETED);
         stopListening();
         resetTranscript(); 
@@ -195,33 +271,60 @@ const App: React.FC = () => {
                 lastReadVerse: lastVerseOfSession.verse,
                 history: userOverallProgress?.history ? [...userOverallProgress.history, historyEntry] : [historyEntry]
             };
-            progressService.saveUserProgress(currentUser.username, newOverallProgress);
-            setUserOverallProgress(newOverallProgress);
-        }
-        setSessionProgress(prev => ({
-            ...prev,
-            sessionCompletedChaptersCount: prev.sessionTargetChapters.length, 
-            currentBook: lastVerseOfSession.book,
-            currentChapter: lastVerseOfSession.chapter,
-            currentVerseNum: lastVerseOfSession.verse,
-        }));
+            // Calculate newly completed chapters from this session
+            const actuallyReadVersesInSession = sessionTargetVerses.slice(sessionProgress.sessionInitialSkipCount);
+            const uniqueChaptersTargeted = [...new Set(actuallyReadVersesInSession.map(v => `${v.book}:${v.chapter}`))];
+            
+            const chaptersToMarkAsComplete = uniqueChaptersTargeted.filter(chapterKey => {
+                const [book, chapterStr] = chapterKey.split(':');
+                const chapter = parseInt(chapterStr, 10);
 
-      } else { 
+                // All verses for this chapter that were part of the session target
+                const versesForThisChapterInTarget = sessionTargetVerses.filter(v => v.book === book && v.chapter === chapter);
+
+                // Check if every single one of them was read in this session
+                return versesForThisChapterInTarget.length > 0 && versesForThisChapterInTarget.every(targetVerse => 
+                    actuallyReadVersesInSession.some(readVerse => 
+                        readVerse.book === targetVerse.book && 
+                        readVerse.chapter === targetVerse.chapter &&
+                        readVerse.verse === targetVerse.verse
+                    )
+                );
+            });
+            
+            // Merge with existing completed chapters
+            const existingCompletedSet = new Set(userOverallProgress?.completedChapters || []);
+            chaptersToMarkAsComplete.forEach(chKey => existingCompletedSet.add(chKey));
+            const updatedCompletedChapters = Array.from(existingCompletedSet);
+
+            const updatedUserProgress: UserProgress = {
+              ...newOverallProgress, // This already has lastRead and history updated
+              completedChapters: updatedCompletedChapters,
+            };
+
+            console.log('[App.tsx] Preparing to save user progress. Full data:', JSON.stringify(updatedUserProgress, null, 2));
+            progressService.saveUserProgress(currentUser.username, updatedUserProgress)
+              .then(() => {
+                console.log('[App.tsx] Successfully saved updated user progress.');
+                setUserOverallProgress(updatedUserProgress);
+                setOverallCompletedChaptersCount(updatedUserProgress.completedChapters?.length || 0);
+              })
+              .catch(error => {
+                console.error('[App.tsx] Error saving updated user progress:', error);
+              });
+        } // This closes: if (currentUser && versesReadCountThisSession > 0)
+      } else { // This is the 'else' for: if (newTotalCompletedInSelection >= sessionTargetVerses.length)
          setCurrentVerseIndexInSession(prevIdx => prevIdx + 1); // 다음 절로 이동
-         const nextVerseDetails = sessionTargetVerses[newTotalCompletedInSelection];
-         setSessionProgress(prev => ({
-            ...prev,
-            currentBook: nextVerseDetails.book,
-            currentChapter: nextVerseDetails.chapter,
-            currentVerseNum: nextVerseDetails.verse,
-          }));
+
          setTranscriptBuffer(''); // Clear buffer for next verse
          resetTranscript(); // Reset STT for next verse
       }
     }
     // 매칭 실패 시 인덱스 증가/세션 종료 없음
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcriptBuffer, readingState, currentTargetVerseForSession, currentUser, sessionTargetVerses, userOverallProgress]);
+  }, [transcriptBuffer, readingState, currentTargetVerseForSession, currentUser, sessionTargetVerses, userOverallProgress, isIOS]);
+
+
 
   useEffect(() => {
     if (sttError) {
@@ -239,50 +342,41 @@ const App: React.FC = () => {
   }, [readingState]);
 
   const handleSelectChaptersAndStartReading = (book: string, startCh: number, endCh: number) => {
-    let verses = getVersesForSelection(book, startCh, endCh);
-    // 마지막 읽은 곳이 현재 책/범위에 포함되면 다음 절부터만 남기기
-    if (userOverallProgress) {
-      const { lastReadBook, lastReadChapter, lastReadVerse } = userOverallProgress;
-      // 같은 책이면, 마지막 읽은 절 이후부터 시작
-      if (lastReadBook === book) {
-        verses = verses.filter((v: BibleVerse) =>
-          v.chapter > lastReadChapter ||
-          (v.chapter === lastReadChapter && v.verse > lastReadVerse)
-        );
-      } else {
-        // 다른 책이면 전체 범위 읽기 (즉, 필터링하지 않음)
+    const verses = getVersesForSelection(book, startCh, endCh);
+    if (verses.length > 0) {
+      let initialSkip = 0;
+      // Check if this is a "continue reading" session for the recommended chapter
+      if (
+        book === selectedBookForSelector &&
+        startCh === startChapterForSelector &&
+        endCh === startChapterForSelector && // Continue reading is always a single chapter
+        startVerseForSelector > 1
+      ) {
+        // Find the index of the first verse to read.
+        // The verse number is 1-based, array index is 0-based.
+        const firstVerseIndex = verses.findIndex(v => v.verse === startVerseForSelector);
+        if (firstVerseIndex !== -1) {
+          initialSkip = firstVerseIndex;
+        }
       }
+
+      // Reset session-related states before starting
+      setSessionTargetVerses(verses);
+      setReadingState(ReadingState.READING);
+      setCurrentVerseIndexInSession(initialSkip); // Start from the correct verse
+      setMatchedVersesContentForSession('');
+      setTranscriptBuffer('');
+      resetTranscript();
+      setSessionProgress({
+        totalVersesInSession: verses.length,
+        sessionCompletedVersesCount: initialSkip, // Pre-mark skipped verses as "completed" for progress bar
+        sessionInitialSkipCount: initialSkip,
+      });
+      setSessionCertificationMessage(""); // Clear previous certification message
+      setAppError(null); // Clear previous errors
+    } else {
+      setAppError('선택한 범위에 대한 성경 데이터를 찾을 수 없습니다.');
     }
-    if (verses.length === 0) {
-      const selectedBookInfo = AVAILABLE_BOOKS.find(b => b.name === book);
-      if (selectedBookInfo && selectedBookInfo.chapterCount > 0) {
-        setAppError(`"${book}" 책의 성경 데이터(본문)가 아직 로드되지 않았습니다. 현재는 '창세기' 1-5장의 본문만 제공됩니다. 다른 책은 장/절 구조만 표시됩니다.`);
-      } else if (selectedBookInfo && selectedBookInfo.chapterCount === 0) {
-        setAppError(`"${book}" 책은 장/절 정보가 없습니다.`);
-      } else {
-        setAppError(`"${book}" 책을 찾을 수 없습니다.`);
-      }
-      return;
-    }
-    setSessionTargetVerses(verses);
-    setCurrentVerseIndexInSession(0); // 세션 시작 시 항상 0으로 초기화
-    setReadingState(ReadingState.READING); // 읽기 모드로 전환
-    setAppError(null);
-    setSessionCertificationMessage("");
-    setMatchedVersesContentForSession("");
-    // 세션 구절/장 정보 세팅
-    const chapters = Array.from(new Set(verses.map((v: BibleVerse) => v.chapter)));
-    setSessionProgress({
-      currentBook: book,
-      currentChapter: chapters[0] || 1,
-      currentVerseNum: verses[0]?.verse || 1,
-      sessionTargetVerses: verses,
-      sessionTotalVersesCount: verses.length,
-      sessionCompletedVersesCount: 0,
-      sessionTargetChapters: chapters.map((ch: number) => ({ book, chapter: ch, totalVerses: verses.filter((v: BibleVerse) => v.chapter === ch).length })),
-      sessionCompletedChaptersCount: 0,
-      sessionInitialSkipCount: 0
-    });
   };
 
   const handleStopReadingAndSave = () => {
@@ -316,14 +410,87 @@ const App: React.FC = () => {
           endVerse: lastEffectivelyReadVerse.verse,
           versesRead: versesActuallyReadThisSessionCount
       };
-      const newOverallProgress: UserProgress = {
-          lastReadBook: lastEffectivelyReadVerse.book,
-          lastReadChapter: lastEffectivelyReadVerse.chapter,
-          lastReadVerse: lastEffectivelyReadVerse.verse,
-          history: userOverallProgress?.history ? [...userOverallProgress.history, historyEntry] : [historyEntry]
-      };
-      progressService.saveUserProgress(currentUser.username, newOverallProgress);
-      setUserOverallProgress(newOverallProgress);
+      const newCompletedChaptersInSession = new Set<string>(userOverallProgress?.completedChapters || []);
+
+    // Determine newly completed chapters in this session
+    const versesReadInSession = sessionTargetVerses.slice(
+      sessionProgress.sessionInitialSkipCount,
+      sessionProgress.sessionCompletedVersesCount
+    );
+
+    const chaptersTouchedInSession: { [key: string]: { count: number, book: string, chapterNum: number } } = {};
+
+    for (const verse of versesReadInSession) {
+      const chapterKey = `${verse.book}:${verse.chapter}`;
+      if (!chaptersTouchedInSession[chapterKey]) {
+        chaptersTouchedInSession[chapterKey] = { count: 0, book: verse.book, chapterNum: verse.chapter };
+      }
+      chaptersTouchedInSession[chapterKey].count++;
+    }
+
+    for (const chapterKeyFromSession in chaptersTouchedInSession) {
+      const { book, chapterNum } = chaptersTouchedInSession[chapterKeyFromSession];
+
+      // Find the abbreviation for the book, which is used as the key in bibleData
+      const bookAbbr = Object.keys(BOOK_ABBREVIATIONS_MAP).find(key => BOOK_ABBREVIATIONS_MAP[key] === book);
+
+      if (!bookAbbr) {
+        console.error(`Could not find abbreviation for book: ${book}`);
+        continue; // Skip to the next chapter if no abbreviation found
+      }
+
+      // Get all canonical verses for this chapter from the flat bibleData
+      const canonicalVersesForChapter: BibleVerse[] = [];
+      for (const bibleKey in bibleData) {
+        const parts = bibleKey.match(/^(\D+)(\d+):(\d+)$/); // e.g., "창1:1" -> "창", "1", "1"
+        if (parts && parts[1] === bookAbbr && parseInt(parts[2], 10) === chapterNum) {
+          canonicalVersesForChapter.push({
+            book: book, // Use the original full book name for matching against sessionTargetVerses
+            chapter: parseInt(parts[2], 10),
+            verse: parseInt(parts[3], 10),
+            text: bibleData[bibleKey]
+          });
+        }
+      }
+
+      if (canonicalVersesForChapter.length > 0) {
+        // Check if all canonical verses of this chapter were part of the session's target and were read/skipped.
+        let allCanonicalChapterVersesReadOrSkipped = true;
+        for (const canonicalVerse of canonicalVersesForChapter) {
+          const indexInSessionTarget = sessionTargetVerses.findIndex(
+            sv => sv.book === canonicalVerse.book && 
+                  sv.chapter === canonicalVerse.chapter && 
+                  sv.verse === canonicalVerse.verse
+          );
+
+          if (indexInSessionTarget === -1) {
+            // A canonical verse of this chapter was not even targeted in the session.
+            allCanonicalChapterVersesReadOrSkipped = false;
+            break;
+          }
+
+          // Check if this targeted verse (at indexInSessionTarget) was covered by the session's progress.
+          if (indexInSessionTarget >= sessionProgress.sessionCompletedVersesCount) {
+            allCanonicalChapterVersesReadOrSkipped = false;
+            break;
+          }
+        }
+
+        if (allCanonicalChapterVersesReadOrSkipped) {
+          newCompletedChaptersInSession.add(chapterKeyFromSession); // Use the original chapterKey e.g. "BookName:ChapterNum"
+        }
+      }
+    }
+
+    const newOverallProgress: UserProgress = {
+        lastReadBook: lastEffectivelyReadVerse.book,
+        lastReadChapter: lastEffectivelyReadVerse.chapter,
+        lastReadVerse: lastEffectivelyReadVerse.verse,
+        history: userOverallProgress?.history ? [...userOverallProgress.history, historyEntry] : [historyEntry],
+        completedChapters: Array.from(newCompletedChaptersInSession)
+    };
+    progressService.saveUserProgress(currentUser.username, newOverallProgress);
+    setUserOverallProgress(newOverallProgress);
       
     } else if (versesActuallyReadThisSessionCount <=0) {
          setSessionCertificationMessage("이번 세션에서 읽은 구절이 없습니다.");
@@ -338,118 +505,22 @@ const App: React.FC = () => {
   };
 
   const handleRetryVerse = () => {
-    if (readingState !== ReadingState.LISTENING) return;
-
-    stopListening();
-    setTranscriptBuffer('');
-    resetTranscript();
+    // The hook now handles the complexities. We just need to signal the intent.
+    setReadingState(ReadingState.LISTENING);
+    setMatchedVersesContentForSession(''); // Clear visual feedback in the app
+    setTranscriptBuffer(''); // Clear app-level buffer
     setAppError(null);
 
-    // Restart listening for the same verse after a short delay
-    setTimeout(() => {
-      if (browserSupportsSpeechRecognition) {
-        startListening();
-      } else {
-        setAppError('이 브라우저는 음성 인식을 지원하지 않습니다.');
-        setReadingState(ReadingState.ERROR);
-      }
-    }, 100);
+    resetTranscript(); // STT 훅 내부의 이전 기록 초기화
+    stopListening();
+    setIsRetryingVerse(true);
   };
-
-  const initialSelectionForSelector = useMemo(() => {
-    if (userOverallProgress && userOverallProgress.lastReadBook && userOverallProgress.lastReadChapter > 0 && userOverallProgress.lastReadVerse > 0) {
-      let { lastReadBook, lastReadChapter, lastReadVerse } = userOverallProgress;
-
-      let suggestedBookName = lastReadBook;
-      let suggestedChapterNum = lastReadChapter;
-
-      const currentBookInfo = AVAILABLE_BOOKS.find(b => b.name === lastReadBook);
-
-      if (currentBookInfo && currentBookInfo.chapterCount > 0 && currentBookInfo.versesPerChapter.length >= lastReadChapter) { // Check versesPerChapter length for populated data
-        // Only proceed if versesPerChapter for the lastReadChapter is available
-        // This check is a bit tricky since versesPerChapter is often a TODO for non-Genesis books
-        // A more robust check might be needed if versesPerChapter is sparse.
-        // For now, let's assume if chapterCount > 0, we can attempt to get verse count.
-        // A better approach would be to have BIBLE_DATA_RAW populate versesPerChapter accurately.
-        
-        // This part relies on having correct verse counts in currentBookInfo.versesPerChapter
-        // If it's a TODO (empty array), this logic might not be accurate.
-        // For Genesis, it will be accurate. For others, it might default to suggesting chapter+1
-        // even if not strictly the end of chapter. This is an acceptable limitation given current data.
-        
-        const versesInLastReadChapter = currentBookInfo.versesPerChapter[lastReadChapter - 1] || 999; // Fallback if not populated
-
-        if (lastReadVerse >= versesInLastReadChapter) { // If last read verse was the last in the chapter
-          suggestedChapterNum = lastReadChapter + 1;
-          
-          if (suggestedChapterNum > currentBookInfo.chapterCount) { // If last read chapter was the last in the book
-            const currentBookIndex = AVAILABLE_BOOKS.findIndex(b => b.name === lastReadBook);
-            let nextBookFoundAndValid = false;
-            if (currentBookIndex !== -1 && currentBookIndex < AVAILABLE_BOOKS.length - 1) {
-              for (let i = currentBookIndex + 1; i < AVAILABLE_BOOKS.length; i++) {
-                const nextBookCandidate = AVAILABLE_BOOKS[i];
-                if (nextBookCandidate && nextBookCandidate.chapterCount > 0) {
-                  suggestedBookName = nextBookCandidate.name;
-                  suggestedChapterNum = 1;
-                  nextBookFoundAndValid = true;
-                  break;
-                }
-              }
-            }
-            if (!nextBookFoundAndValid) {
-              // Cannot find a subsequent book with data, suggest the last chapter of the current book.
-              suggestedBookName = lastReadBook; 
-              suggestedChapterNum = currentBookInfo.chapterCount > 0 ? currentBookInfo.chapterCount : 1; 
-            }
-          }
-        }
-        // If not last verse of chapter, suggestedBookName and suggestedChapterNum remain as lastReadBook/Chapter
-      } else if (currentBookInfo && currentBookInfo.chapterCount > 0) {
-        // Fallback if versesPerChapter is not populated: assume not end of chapter, or try to advance chapter/book if it's the last possible chapter.
-         if (lastReadChapter >= currentBookInfo.chapterCount) { // If at the last chapter of the book
-            suggestedChapterNum = lastReadChapter + 1; // This will trigger book advancement logic above
-             if (suggestedChapterNum > currentBookInfo.chapterCount) {
-                const currentBookIndex = AVAILABLE_BOOKS.findIndex(b => b.name === lastReadBook);
-                let nextBookFoundAndValid = false;
-                if (currentBookIndex !== -1 && currentBookIndex < AVAILABLE_BOOKS.length - 1) {
-                  for (let i = currentBookIndex + 1; i < AVAILABLE_BOOKS.length; i++) {
-                    const nextBookCandidate = AVAILABLE_BOOKS[i];
-                    if (nextBookCandidate && nextBookCandidate.chapterCount > 0) {
-                      suggestedBookName = nextBookCandidate.name;
-                      suggestedChapterNum = 1;
-                      nextBookFoundAndValid = true;
-                      break;
-                    }
-                  }
-                }
-                 if (!nextBookFoundAndValid) {
-                    suggestedBookName = lastReadBook; 
-                    suggestedChapterNum = currentBookInfo.chapterCount > 0 ? currentBookInfo.chapterCount : 1; 
-                }
-            }
-        }
-      }
-      
-      const finalBookInfo = AVAILABLE_BOOKS.find(b => b.name === suggestedBookName);
-      if (finalBookInfo && finalBookInfo.chapterCount > 0 && suggestedChapterNum > 0 && suggestedChapterNum <= finalBookInfo.chapterCount) {
-        return { book: suggestedBookName, chapter: suggestedChapterNum };
-      } else if (finalBookInfo && finalBookInfo.chapterCount > 0) { 
-         return { book: suggestedBookName, chapter: 1 }; 
-      } else { 
-         const firstAvailableBookWithData = AVAILABLE_BOOKS.find(b => b.chapterCount > 0);
-         return firstAvailableBookWithData ? { book: firstAvailableBookWithData.name, chapter: 1} : { book: "창세기", chapter: 1};
-      }
-    }
-    const firstAvailableBookWithData = AVAILABLE_BOOKS.find(b => b.chapterCount > 0);
-    return firstAvailableBookWithData ? { book: firstAvailableBookWithData.name, chapter: 1} : { book: "창세기", chapter: 1};
-  }, [userOverallProgress]);
-
 
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-100 to-gray-200 py-8 px-4 flex flex-col items-center justify-center">
         <header className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-indigo-700">포도나무교회 | 성경 읽기 도우미</h1>
+          <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-indigo-700">포도나무교회 | 성경읽기 챌린지</h1>
         </header>
         <AuthForm onAuth={handleAuth} title="로그인 또는 사용자 등록" />
         {appError && <p className="mt-4 text-red-500">{appError}</p>}
@@ -460,11 +531,11 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-100 via-indigo-50 to-purple-100 py-8 px-4 flex flex-col items-center">
       <div className="w-full max-w-3xl bg-white shadow-xl rounded-lg p-6 md:p-8">
-        <header className="mb-6 flex justify-between items-center">
-          <h1 className="text-3xl md:text-4xl font-bold text-indigo-700">성경 읽기 도우미</h1>
-          <div className="text-right">
+        <header className="mb-6 flex flex-col items-center sm:flex-row sm:justify-between sm:items-center">
+          <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-indigo-700 break-keep mb-2 sm:mb-0 text-center sm:text-left">성경읽기 챌린지</h1>
+          <div className="text-sm sm:text-right">
             <p className="text-sm text-gray-600">환영합니다, {currentUser.username}님!</p>
-            <button onClick={handleLogout} className="text-sm text-indigo-600 hover:text-indigo-800 underline">로그아웃</button>
+            <button onClick={handleLogout} className="bg-red-500 hover:bg-red-600 text-white text-xs font-semibold py-1 px-3 rounded-md shadow transition duration-150 ease-in-out">로그아웃</button>
           </div>
         </header>
 
@@ -489,14 +560,54 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {readingState === ReadingState.IDLE && (
+{readingState === ReadingState.IDLE && (
           <>
-            <ChapterSelector 
-              onStartReading={handleSelectChaptersAndStartReading} 
-              defaultBook={AVAILABLE_BOOKS.find(b => b.chapterCount > 0)?.name || "창세기"} 
-              initialSelection={initialSelectionForSelector}
+            {/* Overall Bible Progress Display */}
+            {currentUser && totalBibleChapters > 0 && (
+              <div className="my-4 p-4 bg-sky-50 border border-sky-200 rounded-lg shadow">
+                <h3 className="text-lg font-semibold text-sky-700 mb-2">성경 전체 완독 진행률</h3>
+                <div className="w-full bg-gray-200 rounded-full h-4">
+                  <div
+                    className="bg-sky-500 h-4 rounded-full transition-all duration-300 ease-out relative"
+                    style={{ width: `${totalBibleChapters > 0 ? (overallCompletedChaptersCount / totalBibleChapters) * 100 : 0}%` }}
+                  >
+                    <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white">
+                      {totalBibleChapters > 0 ? ((overallCompletedChaptersCount / totalBibleChapters) * 100).toFixed(1) : '0.0'}%
+                    </span>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-600 mt-1.5 text-right">
+                  {overallCompletedChaptersCount} / {totalBibleChapters} 장 완독
+                </p>
+              </div>
+            )}
+
+            {/* Continue Reading Section */}
+            <div className="my-4 p-4 bg-blue-50 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-blue-700">이어 읽기</h3>
+              {userOverallProgress && userOverallProgress.lastReadBook ? (
+                <p className="text-sm text-gray-600">
+                  마지막 읽은 곳: {userOverallProgress.lastReadBook} {userOverallProgress.lastReadChapter}장 {userOverallProgress.lastReadVerse}절.
+                </p>
+              ) : (
+                <p className="text-sm text-gray-600">
+                  아직 읽기 기록이 없습니다. 아래에서 시작할 부분을 선택하세요.
+                </p>
+              )}
+              {userOverallProgress && userOverallProgress.lastReadBook && selectedBookForSelector && (
+                <p className="text-sm text-gray-500 mt-1">
+                  추천 시작: {selectedBookForSelector} {startChapterForSelector}장 {startVerseForSelector}절. (아래에서 변경 가능)
+                </p>
+              )}
+            </div>
+
+            <ChapterSelector
+              onStartReading={handleSelectChaptersAndStartReading}
+              defaultBook={selectedBookForSelector}
+              initialSelection={{ book: selectedBookForSelector, chapter: startChapterForSelector }}
+              completedChapters={userOverallProgress?.completedChapters}
             />
-            <Leaderboard key={userOverallProgress ? `${userOverallProgress.lastReadBook}-${userOverallProgress.lastReadChapter}-${userOverallProgress.lastReadVerse}` : 'no-progress'} /> 
+            <Leaderboard key={userOverallProgress ? `lb-${userOverallProgress.lastReadBook}-${userOverallProgress.lastReadChapter}-${userOverallProgress.lastReadVerse}` : 'lb-no-progress'} />
           </>
         )}
 
@@ -533,20 +644,23 @@ const App: React.FC = () => {
               readingTarget={currentTargetVerseForSession ? `${currentTargetVerseForSession.book} ${currentTargetVerseForSession.chapter}장 ${currentTargetVerseForSession.verse}절` : "읽기 목표 없음"}
             />
             {readingState === ReadingState.LISTENING && (
-              <div className="flex gap-4 mt-4">
-                <button
-                  className="px-6 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition"
-                  onClick={handleStopReadingAndSave}
-                >
-                  중지
-                </button>
-                <button
-                  className="px-6 py-2 bg-yellow-500 text-white rounded-lg font-bold hover:bg-yellow-600 transition"
-                  onClick={handleRetryVerse}
-                >
-                  다시 읽기
-                </button>
-              </div>
+              <>
+                <div className="flex gap-4 mt-4">
+                  <button
+                    className="px-6 py-2 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition"
+                    onClick={handleStopReadingAndSave}
+                  >
+                    중지
+                  </button>
+                  <button
+                    className="px-6 py-2 bg-yellow-500 text-white rounded-lg font-bold hover:bg-yellow-600 transition"
+                    onClick={handleRetryVerse}
+                  >
+                    다시 읽기
+                  </button>
+                </div>
+                <p className="mt-3 text-xs text-center text-gray-600">※ 읽기를 마치면 '중지' 버튼을 눌러야 진행 상황이 저장됩니다.</p>
+              </>
             )}
             {readingState === ReadingState.SESSION_COMPLETED && (
               <div className="text-center p-6 bg-green-50 border-2 border-green-500 rounded-lg shadow-md">
@@ -567,7 +681,7 @@ const App: React.FC = () => {
         
         <footer className="mt-12 pt-6 border-t border-gray-300 text-center text-sm text-gray-500">
             {new Date().getFullYear()} Bible Reading Companion | <span className="font-semibold">포도나무교회</span><br />
-            <span>음성 인식 정확도는 환경에 따라 다를 수 있습니다.</span>
+            <span>음성 인식 정확도를 위해 조용한 곳을 권장합니다.</span>
         </footer>
       </div>
     </div>

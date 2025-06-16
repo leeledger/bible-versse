@@ -3,10 +3,19 @@ import { UserProgress } from '../types';
 import * as authService from '../services/authService';
 import { AVAILABLE_BOOKS } from '../constants'; // To get book order if needed
 
+// authService.getAllUsersWithProgress()가 반환하는 데이터 구조에 대한 인터페이스
+interface UserDataForLeaderboard {
+  username: string;
+  progress: UserProgress; // UserProgress에는 lastProgressUpdateDate가 포함됨
+  completionRate: number;
+}
+
 interface LeaderboardEntry {
   rank: number;
   username: string;
   progressDisplay: string;
+  completionRate: number;
+  lastProgressUpdateDate?: string; // ISO string, UserProgress에서 가져옴
   // Raw progress for sorting
   book: string;
   chapter: number;
@@ -24,9 +33,15 @@ const Leaderboard: React.FC = () => {
     const fetchLeaderboardData = async () => {
       setIsLoading(true);
       try {
-        const usersData = await authService.getAllUsersWithProgress(); // Await the promise
+        const usersData: UserDataForLeaderboard[] = await authService.getAllUsersWithProgress(); // Await the promise
 
         const sortedUsers = [...usersData].sort((a, b) => {
+          // Primary sort: by completionRate, descending
+          if (a.completionRate !== b.completionRate) {
+            return b.completionRate - a.completionRate;
+          }
+
+          // Secondary sort: by last read progress
           const bookIndexA = BOOK_ORDER.indexOf(a.progress.lastReadBook);
           const bookIndexB = BOOK_ORDER.indexOf(b.progress.lastReadBook);
 
@@ -50,12 +65,14 @@ const Leaderboard: React.FC = () => {
             progressDisplay = `${user.progress.lastReadBook || '??'} ${user.progress.lastReadChapter}장 ${user.progress.lastReadVerse}절`;
           }
           return {
+            completionRate: user.completionRate,
             rank: index + 1,
             username: user.username,
             progressDisplay: progressDisplay,
             book: user.progress?.lastReadBook || '',
             chapter: user.progress?.lastReadChapter || 0,
             verse: user.progress?.lastReadVerse || 0,
+            lastProgressUpdateDate: user.progress?.lastProgressUpdateDate, // UserProgress에서 직접 가져옴
           };
         });
 
@@ -89,20 +106,16 @@ const Leaderboard: React.FC = () => {
 
   return (
     <div className="mt-8 p-4 sm:p-6 bg-white shadow-xl rounded-lg">
-      <h3 className="text-2xl font-semibold text-indigo-700 mb-4 text-center">🏆 읽기 랭킹 보드 🏆</h3>
+      <h2 className="text-xl sm:text-2xl font-bold text-center text-indigo-700 mb-6 break-keep">완독률 순위</h2>
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                순위
-              </th>
-              <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                사용자명
-              </th>
-              <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                읽은 곳
-              </th>
+              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">순위</th>
+              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">사용자명</th>
+              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">최근 읽기</th>
+              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">완독률</th>
+              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">업데이트 일시</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
@@ -111,6 +124,12 @@ const Leaderboard: React.FC = () => {
                 <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{entry.rank}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{entry.username}</td>
                 <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{entry.progressDisplay}</td>
+                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{entry.completionRate.toFixed(1)}%</td>
+                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                  {entry.lastProgressUpdateDate 
+                      ? new Date(entry.lastProgressUpdateDate).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replace(/\.$/, '').replace(/\./g, '-').replace(' - ', ' ') // YYYY-MM-DD HH:mm, .replace(/\.$/, '') for potential trailing dot from seconds
+                      : ''}
+                </td>
               </tr>
             ))}
           </tbody>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>포도나무교회 | 성경 읽기 도우미</title>
+    <title>포도나무교회 | 성경읽기 챌린지</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,6 +28,16 @@
         background: #718096; /* Darker gray-blue thumb on hover */
       }
     </style>
+    <script>
+      const userAgent = navigator.userAgent;
+      const isKakao = /KAKAOTALK/i.test(userAgent);
+      const isIphone = /iPhone/i.test(userAgent); // 아이폰 감지
+
+      // 카카오톡 인앱 브라우저이고 아이폰이 아닐 경우에만 리디렉션
+      if (isKakao && !isIphone) {
+        window.location.href = 'intent://robotncoding.synology.me#Intent;scheme=https;end';
+      }
+    </script>
     <script>
       tailwind.config = {
         theme: {

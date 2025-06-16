@@ -18,8 +18,38 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3001:3001"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/bible_db
+      # For direct pg client connection parameters if needed
+      - PGHOST=postgres
+      - PGUSER=user
+      - PGPASSWORD=password
+      - PGDATABASE=bible_db
+      - PGPORT=5432
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
-      - bible_database_volume:/app
+      - ./server:/app # Mount the server code, database.json will be ignored by new logic
+    networks:
+      - app-network
+
+  postgres:
+    container_name: bible_postgres_db
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: bible_db
+    ports:
+      - "5433:5432" # Expose port for local development/debugging if needed. Host port changed to 5433.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d bible_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     networks:
       - app-network
 
@@ -28,4 +58,5 @@ networks:
     driver: bridge
 
 volumes:
-  bible_database_volume: {}
+  postgres_data: {} # Volume for PostgreSQL data persistence
+  # bible_database_volume: {} # This volume might no longer be needed if database.json is fully replaced

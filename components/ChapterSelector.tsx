@@ -6,12 +6,14 @@ interface ChapterSelectorProps {
   onStartReading: (book: string, startChapter: number, endChapter: number) => void;
   defaultBook?: string;
   initialSelection?: { book: string; chapter: number };
+  completedChapters?: string[];
 }
 
 const ChapterSelector: React.FC<ChapterSelectorProps> = ({ 
     onStartReading, 
     defaultBook = "창세기",
     initialSelection,
+    completedChapters = [],
 }) => {
   const [selectedBookName, setSelectedBookName] = useState<string>(defaultBook);
   const [selectedBookInfo, setSelectedBookInfo] = useState<BookChapterInfo | undefined>(
@@ -21,6 +23,7 @@ const ChapterSelector: React.FC<ChapterSelectorProps> = ({
   const [endChapter, setEndChapter] = useState<number>(1);
   const [error, setError] = useState<string>('');
   const [dataAvailableForBook, setDataAvailableForBook] = useState<boolean>(false);
+  const [alreadyReadMessage, setAlreadyReadMessage] = useState<string>('');
 
   useEffect(() => {
     let bookNameToSet = defaultBook;
@@ -83,6 +86,23 @@ const ChapterSelector: React.FC<ChapterSelectorProps> = ({
     }
   }, [startChapter, endChapter, selectedBookInfo]);
 
+  useEffect(() => {
+    if (!selectedBookInfo || !completedChapters) {
+      setAlreadyReadMessage('');
+      return;
+    }
+
+    let message = '';
+    for (let ch = startChapter; ch <= endChapter; ch++) {
+      const chapterKey = `${selectedBookName}:${ch}`;
+      if (completedChapters.includes(chapterKey)) {
+        message = "선택한 범위에 이미 읽은 장이 포함되어 있습니다.";
+        break;
+      }
+    }
+    setAlreadyReadMessage(message);
+  }, [selectedBookName, startChapter, endChapter, completedChapters, selectedBookInfo]);
+
 
   const handleStart = () => {
     if (!selectedBookInfo || selectedBookInfo.chapterCount === 0) {
@@ -103,6 +123,17 @@ const ChapterSelector: React.FC<ChapterSelectorProps> = ({
     }
     setError('');
     onStartReading(selectedBookName, startChapter, endChapter);
+  };
+
+  const renderChapterWarning = () => {
+    if (alreadyReadMessage) {
+      return (
+        <p className="text-sm text-yellow-600 bg-yellow-50 p-2 rounded-md text-center">
+          {alreadyReadMessage}
+        </p>
+      );
+    }
+    return null;
   };
 
   const chapterOptions = (maxChapter: number) => {
@@ -129,6 +160,8 @@ const ChapterSelector: React.FC<ChapterSelectorProps> = ({
           ))}
         </select>
       </div>
+
+      {renderChapterWarning()}
       
       {/* Chapter selectors are always rendered but may be disabled */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -7,17 +7,8 @@ export interface BibleVerse {
 
 // Represents progress within a single reading session
 export interface SessionReadingProgress {
-  currentBook: string; // Book of the current verse being targeted in the session
-  currentChapter: number; // Chapter of the current verse being targeted
-  currentVerseNum: number; // Verse number of the current verse being targeted
-  
-  // About the session's overall goal
-  sessionTargetVerses: BibleVerse[]; // All verses targeted in this specific session
-  sessionTotalVersesCount: number; // Total number of verses in this session's goal
+  totalVersesInSession: number; // Total number of verses in this session's goal
   sessionCompletedVersesCount: number; // Verses completed *in this session* (from start of selection, including skipped)
-  
-  sessionTargetChapters: { book: string; chapter: number; totalVerses: number }[]; // Chapters included in this session
-  sessionCompletedChaptersCount: number; // Chapters completed *in this session*
   sessionInitialSkipCount: number; // Number of verses skipped at the beginning of this session
 }
 
@@ -39,7 +30,9 @@ export interface UserProgress {
   lastReadBook: string;
   lastReadChapter: number;
   lastReadVerse: number;
-  history?: UserSessionRecord[]; // Optional: for more detailed history
+  history?: UserSessionRecord[];
+  completedChapters?: string[]; // Array of strings like "BookName:ChapterNum"
+  lastProgressUpdateDate?: string; // ISO string format for when progress was last saved
 }
 
 export interface UserSessionRecord {

@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: 'http://backend:3001', // Use the docker service name
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, ''),
+
         },
       },
     },
@@ -32,7 +32,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: 'http://backend:3001', // Use the docker service name
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, ''),
+
         },
       },
     },
