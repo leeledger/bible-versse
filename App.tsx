@@ -28,11 +28,9 @@ const normalizeText = (text: string): string => {
     .replace(/\s+/g, ""); // remove all whitespace
 };
 
-const FUZZY_MATCH_LOOKBACK_FACTOR = 1.8; 
-const FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT = 60; // 기본 유사도 기준 (안드로이드, PC 등)
-const FUZZY_MATCH_SIMILARITY_THRESHOLD_IOS = 50; // iOS를 위한 완화된 유사도 기준
-const MINIMUM_READ_LENGTH_RATIO_DEFAULT = 0.9; // 기본 길이 비율
-const MINIMUM_READ_LENGTH_RATIO_IOS = 0.8; // iOS를 위한 완화된 길이 비율
+const FUZZY_MATCH_LOOKBACK_FACTOR = 1.3; // 1.8에서 하향 조정. 이전 절 텍스트가 비교에 포함되는 것을 방지 
+const FUZZY_MATCH_SIMILARITY_THRESHOLD = 60; // 70에서 하향 조정. 발음이 어려운 단어 인식률 개선
+const MINIMUM_READ_LENGTH_RATIO = 0.9; // Must read at least 90% of the verse's length
 const ABSOLUTE_READ_DIFFERENCE_THRESHOLD = 5; // Or be within 5 characters of the end
 
 const initialSessionProgress: SessionReadingProgress = {
@@ -42,7 +40,6 @@ const initialSessionProgress: SessionReadingProgress = {
 };
 
 const App: React.FC = () => {
-    const isIOS = useMemo(() => /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream, []);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userOverallProgress, setUserOverallProgress] = useState<UserProgress | null>(null);
   
@@ -201,9 +198,6 @@ const App: React.FC = () => {
       return;
     }
 
-    const similarityThreshold = isIOS ? FUZZY_MATCH_SIMILARITY_THRESHOLD_IOS : FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT;
-    const minLengthRatio = isIOS ? MINIMUM_READ_LENGTH_RATIO_IOS : MINIMUM_READ_LENGTH_RATIO_DEFAULT;
-
     const normalizedTargetVerseText = normalizeText(currentTargetVerseForSession.text);
     const normalizedBuffer = normalizeText(transcriptBuffer);
 
@@ -217,12 +211,12 @@ const App: React.FC = () => {
     const similarity = calculateSimilarity(normalizedTargetVerseText, bufferPortionToCompare);
 
     // 매칭 성공 시에만 다음 절로 진행
-    const isLengthSufficientByRatio = bufferPortionToCompare.length >= normalizedTargetVerseText.length * minLengthRatio;
+    const isLengthSufficientByRatio = bufferPortionToCompare.length >= normalizedTargetVerseText.length * MINIMUM_READ_LENGTH_RATIO;
     const isLengthSufficientByAbsoluteDiff = (normalizedTargetVerseText.length - bufferPortionToCompare.length) <= ABSOLUTE_READ_DIFFERENCE_THRESHOLD && bufferPortionToCompare.length > 0;
 
-    console.log(`[App.tsx] Matching Details - Platform: ${isIOS ? 'iOS' : 'Other'}, Similarity: ${similarity} (Threshold: ${similarityThreshold}), LengthRatioSufficient: ${isLengthSufficientByRatio}, LengthAbsoluteSufficient: ${isLengthSufficientByAbsoluteDiff}`);
+    console.log(`[App.tsx] Matching Details - Similarity: ${similarity} (Threshold: ${FUZZY_MATCH_SIMILARITY_THRESHOLD}), LengthRatioSufficient: ${isLengthSufficientByRatio}, LengthAbsoluteSufficient: ${isLengthSufficientByAbsoluteDiff}`);
     console.log(`[App.tsx] Comparing Buffer: "${bufferPortionToCompare}" with Target: "${normalizedTargetVerseText}"`);
-    if (similarity >= similarityThreshold && (isLengthSufficientByRatio || isLengthSufficientByAbsoluteDiff)) {
+    if (similarity >= FUZZY_MATCH_SIMILARITY_THRESHOLD && (isLengthSufficientByRatio || isLengthSufficientByAbsoluteDiff)) {
       console.log(`[App.tsx] Verse matched! Index: ${currentVerseIndexInSession}, Target length: ${sessionTargetVerses.length}`);
       setMatchedVersesContentForSession(prev => prev + `${currentTargetVerseForSession.book} ${currentTargetVerseForSession.chapter}:${currentTargetVerseForSession.verse} - ${currentTargetVerseForSession.text}\n`);
       
@@ -322,7 +316,7 @@ const App: React.FC = () => {
     }
     // 매칭 실패 시 인덱스 증가/세션 종료 없음
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcriptBuffer, readingState, currentTargetVerseForSession, currentUser, sessionTargetVerses, userOverallProgress, isIOS]);
+  }, [transcriptBuffer, readingState, currentTargetVerseForSession, currentUser, sessionTargetVerses, userOverallProgress]);
 
 
 
