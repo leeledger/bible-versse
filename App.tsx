@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { progressService } from './services/progressService';
 import { BibleVerse, SessionReadingProgress, ReadingState, User, UserProgress, UserSessionRecord } from './types';
-import { AVAILABLE_BOOKS, getVersesForSelection, getNextReadingStart, BOOK_ABBREVIATIONS_MAP } from './constants';
+import { AVAILABLE_BOOKS, getVersesForSelection, getNextReadingStart, BOOK_ABBREVIATIONS_MAP, TOTAL_CHAPTERS_IN_BIBLE } from './constants';
 import useSpeechRecognition from './hooks/useSpeechRecognition';
 import * as authService from './services/authService'; 
 import RecognitionDisplay from './components/RecognitionDisplay';
 import ProgressBar from './components/ProgressBar';
 import AuthForm from './components/AuthForm'; 
 import ChapterSelector from './components/ChapterSelector'; 
-import Leaderboard from './components/Leaderboard'; 
+import Leaderboard from './components/Leaderboard';
+import BibleProgressOverview from './components/BibleProgressOverview'; 
+import BookCompletionStatus from './components/BookCompletionStatus'; // Added import
 import { calculateSimilarity } from './utils';
 // import { BibleData, BibleBook, BibleChapter } from './types'; // Ensured this is commented out or removed
 import rawBibleData from './bible_fixed.json';
@@ -39,9 +41,12 @@ const initialSessionProgress: SessionReadingProgress = {
   sessionInitialSkipCount: 0,
 };
 
+type ViewState = 'IDLE_SETUP' | 'LEADERBOARD';
+
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userOverallProgress, setUserOverallProgress] = useState<UserProgress | null>(null);
+  const [currentView, setCurrentView] = useState<ViewState>('IDLE_SETUP');
   
   const [sessionTargetVerses, setSessionTargetVerses] = useState<BibleVerse[]>([]); // Verses for the current reading session
   const [currentVerseIndexInSession, setCurrentVerseIndexInSession] = useState(0); // Index within sessionTargetVerses
@@ -55,6 +60,11 @@ const App: React.FC = () => {
 
   const [sessionCertificationMessage, setSessionCertificationMessage] = useState<string>('');
   const [appError, setAppError] = useState<string | null>(null);
+  const [showPasswordChangePrompt, setShowPasswordChangePrompt] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [passwordChangeError, setPasswordChangeError] = useState<string | null>(null);
+  const [passwordChangeSuccess, setPasswordChangeSuccess] = useState<string | null>(null);
 
   const [overallCompletedChaptersCount, setOverallCompletedChaptersCount] = useState(0);
   const [totalBibleChapters, setTotalBibleChapters] = useState(0);
@@ -64,6 +74,7 @@ const App: React.FC = () => {
   const [startChapterForSelector, setStartChapterForSelector] = useState<number>(1);
   const [endChapterForSelector, setEndChapterForSelector] = useState<number>(1);
   const [startVerseForSelector, setStartVerseForSelector] = useState<number>(1);
+  const [showBookCompletionStatus, setShowBookCompletionStatus] = useState(false);
 
   const { 
     isListening, 
@@ -75,27 +86,41 @@ const App: React.FC = () => {
     resetTranscript 
   } = useSpeechRecognition({ lang: 'ko-KR' });
 
-  // Overall Bible Progress Effect (for initialization and total chapters)
+  // Overall Bible Progress Effect (for initialization, total chapters, and FULL user progress)
   useEffect(() => {
-    console.log('[Overall Progress Effect] currentUser:', currentUser);
-    const fetchOverallProgress = async () => {
+    console.log('[Overall Progress Effect - Revised] Triggered. currentUser:', currentUser ? currentUser.username : 'null');
+    
+    const fetchAndSetFullProgress = async () => {
       if (currentUser && currentUser.username) {
-        console.log('[Overall Progress Effect] Fetching chapters for username:', currentUser.username);
-        setTotalBibleChapters(progressService.getTotalChaptersInScope());
+        console.log('[Overall Progress Effect - Revised] User found. Fetching full progress for:', currentUser.username);
+        setTotalBibleChapters(TOTAL_CHAPTERS_IN_BIBLE); // Using imported constant
         try {
-          const completedChapters = await progressService.getCompletedChapters(currentUser.username);
-          setOverallCompletedChaptersCount(completedChapters.length);
+          const progressData = await progressService.loadUserProgress(currentUser.username);
+          console.log(`[Overall Progress Effect - Revised] Fetched progressData. Raw: ${JSON.stringify(progressData)}. Completed chapters count: ${progressData?.completedChapters?.length ?? 'N/A'}`);
+          setUserOverallProgress(progressData);
+          console.log('[Overall Progress Effect - Revised] setUserOverallProgress CALLED. Data passed:', progressData ? 'object' : String(progressData));
+          setOverallCompletedChaptersCount(progressData?.completedChapters?.length || 0);
         } catch (error) {
-          console.error('Error fetching overall completed chapters:', error);
+          console.error('[Overall Progress Effect - Revised] Error fetching full user progress:', error);
+          setUserOverallProgress(null);
           setOverallCompletedChaptersCount(0);
         }
       } else {
-        console.log('[Overall Progress Effect] No currentUser or username, resetting counts.');
+        console.log('[Overall Progress Effect - Revised] No currentUser, resetting progress states.');
+        setUserOverallProgress(null);
         setOverallCompletedChaptersCount(0);
-        setTotalBibleChapters(0);
+        setTotalBibleChapters(0); 
       }
     };
-    fetchOverallProgress();
+
+    fetchAndSetFullProgress();
+
+    // Handle password change prompt visibility
+    if (currentUser && currentUser.must_change_password) {
+      setShowPasswordChangePrompt(true);
+    } else {
+      setShowPasswordChangePrompt(false);
+    }
   }, [currentUser]);
 
   // Effect to handle retrying a verse after STT has fully stopped
@@ -106,31 +131,37 @@ const App: React.FC = () => {
     }
   }, [isRetryingVerse, isListening, startListening]);
 
-  // Authentication Effect
+  // Authentication Effect (runs once on mount)
   useEffect(() => {
+    console.log('[AuthEffect - Revised] Running on mount.');
     const user = authService.getCurrentUser();
     if (user) {
+      console.log('[AuthEffect - Revised] User found in authService. Setting currentUser:', user.username);
       setCurrentUser(user);
-      const loadProgress = async () => {
-        const progress = await progressService.loadUserProgress(user.username);
-        setUserOverallProgress(progress);
-        setReadingState(ReadingState.IDLE); // Go to chapter selection after login
-      };
-      loadProgress();
+      // The useEffect dependent on 'currentUser' (Overall Progress Effect - Revised) 
+      // will now handle loading the progress.
+    } else {
+      console.log('[AuthEffect - Revised] No user found in authService on mount.');
     }
-  }, []);
+  }, []); // Empty dependency array - runs once on mount
 
-  // Effect to set default chapter selection based on user progress for "continue reading"
+  // Effect to set default values for ChapterSelector based on user progress
   useEffect(() => {
-    if (currentUser) {
-      const nextRead = getNextReadingStart(userOverallProgress && userOverallProgress.lastReadBook ? { book: userOverallProgress.lastReadBook, chapter: userOverallProgress.lastReadChapter, verse: userOverallProgress.lastReadVerse } : null);
+    console.log('[ChapterSelectorDefaultsEffect] Triggered. currentUser:', currentUser ? currentUser.username : 'null', 'userOverallProgress:', userOverallProgress ? 'exists' : 'null');
+    if (currentUser && userOverallProgress) {
+      const lastReadInfo = userOverallProgress && userOverallProgress.lastReadBook && userOverallProgress.lastReadChapter && userOverallProgress.lastReadVerse
+        ? { book: userOverallProgress.lastReadBook, chapter: userOverallProgress.lastReadChapter, verse: userOverallProgress.lastReadVerse }
+        : null;
+      const nextRead = getNextReadingStart(lastReadInfo);
       if (nextRead) {
+        console.log('[ChapterSelectorDefaultsEffect] User has progress. Next read:', nextRead);
         setSelectedBookForSelector(nextRead.book);
         setStartChapterForSelector(nextRead.chapter);
         setEndChapterForSelector(nextRead.chapter); // For "continue reading", start and end chapter are the same
         setStartVerseForSelector(nextRead.verse);
       } else {
-        // End of Bible or AVAILABLE_BOOKS might be initially empty, default to first book/chapter
+        // End of Bible or no specific next read, default to first book/chapter
+        console.log('[ChapterSelectorDefaultsEffect] User has progress, but no specific nextRead. Defaulting.');
         const firstBook = AVAILABLE_BOOKS[0];
         if (firstBook) {
           setSelectedBookForSelector(firstBook.name);
@@ -140,7 +171,8 @@ const App: React.FC = () => {
         }
       }
     } else {
-      // No user logged in, default to Genesis 1 or first available book
+      // No user logged in or no progress, default to Genesis 1 or first available book
+      console.log('[ChapterSelectorDefaultsEffect] No user or no progress. Defaulting.');
       const firstBook = AVAILABLE_BOOKS[0];
       if (firstBook) {
         setSelectedBookForSelector(firstBook.name);
@@ -151,18 +183,80 @@ const App: React.FC = () => {
     }
   }, [userOverallProgress, currentUser]);
 
-  const handleAuth = async (username: string) => {
-    const user = authService.loginUser(username);
-    if (user) {
-      setCurrentUser(user);
-      const progress = await progressService.loadUserProgress(user.username);
-      setUserOverallProgress(progress);
-      setAppError(null);
-      setReadingState(ReadingState.IDLE); 
+  useEffect(() => {
+    console.log('[App.tsx userOverallProgress Monitor useEffect] userOverallProgress CHANGED to:', userOverallProgress ? 'set with ' + (userOverallProgress.completedChapters?.length || 0) + ' completed chapters' : 'null', userOverallProgress?.completedChapters ? JSON.stringify(userOverallProgress.completedChapters) : '');
+  }, [userOverallProgress]);
+
+  const handleRegister = async (username: string, password_provided: string): Promise<{ success: boolean; message: string; user?: User }> => {
+    console.log(`App.tsx handleRegister called for ${username}`);
+    const result = await authService.registerUser(username, password_provided);
+    if (result.success) {
+      // Optionally, you could auto-login the user here or prompt them to login
+      setAppError(null); // Clear any previous login errors
     } else {
-      setAppError("로그인/등록에 실패했습니다.");
+      setAppError(result.message || "Registration failed from App.tsx");
+    }
+    return result; // Return the full result object to AuthForm
+  };
+
+  const handlePasswordChangeSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setPasswordChangeError(''); // Clear previous errors
+    setPasswordChangeSuccess('');
+
+    if (newPassword !== confirmNewPassword) {
+      setPasswordChangeError('새 비밀번호가 일치하지 않습니다.');
+      return;
+    }
+    if (newPassword.length < 4) { // Basic validation, align with backend if different
+      setPasswordChangeError('비밀번호는 최소 4자 이상이어야 합니다.');
+      return;
+    }
+    if (newPassword === '1234') {
+      setPasswordChangeError('새 비밀번호는 기본 비밀번호와 다르게 설정해야 합니다.');
+      return;
+    }
+
+    if (!currentUser) {
+      setPasswordChangeError('사용자 정보를 찾을 수 없습니다. 다시 로그인해주세요.');
+      return;
+    }
+
+    if (typeof currentUser.id !== 'number') {
+      setPasswordChangeError('사용자 ID가 유효하지 않습니다. 다시 로그인해주세요.');
+      return;
+    }
+
+    try {
+      const result = await authService.changePassword(currentUser.id, newPassword);
+      if (result && result.user) {
+        setPasswordChangeSuccess('비밀번호가 성공적으로 변경되었습니다! 이제 이 알림은 닫으셔도 됩니다.');
+        setCurrentUser({ ...currentUser, ...result.user, must_change_password: false }); // Update user state from backend response
+        setShowPasswordChangePrompt(false); // Hide the prompt/form on success
+        setNewPassword('');
+        setConfirmNewPassword('');
+      } else {
+        setPasswordChangeError(result?.message || '비밀번호 변경에 실패했습니다. 서버 응답을 확인해주세요.');
+      }
+    } catch (error) {
+      console.error('Password change failed:', error);
+      setPasswordChangeError('비밀번호 변경 중 오류가 발생했습니다. 네트워크 연결 또는 서버 상태를 확인해주세요.');
     }
   };
+
+  const handleAuth = async (username: string, password_provided: string): Promise<boolean> => {
+    const user = await authService.loginUser(username, password_provided);
+    if (user) {
+      setCurrentUser(user);
+      setShowPasswordChangePrompt(user.must_change_password === true);
+      setAppError(null);
+      return true;
+    } else {
+      setAppError('비밀번호를 확인하세요.');
+      return false;
+    }
+  };
+
 
   const handleLogout = () => {
     if (readingState === ReadingState.LISTENING) {
@@ -514,24 +608,23 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-100 to-gray-200 py-8 px-4 flex flex-col items-center justify-center">
         <header className="mb-8 text-center">
-          <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-indigo-700">포도나무교회 | 성경읽기 챌린지</h1>
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-blue-500 to-purple-500 drop-shadow-lg mb-2">
+            말씀 여정에 함께해요
+          </h1>
+          <div className="text-base sm:text-lg text-gray-600 font-serif mb-2">Bible Journey Challenge</div>
         </header>
-        <AuthForm onAuth={handleAuth} title="로그인 또는 사용자 등록" />
-        {appError && <p className="mt-4 text-red-500">{appError}</p>}
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-100 via-indigo-50 to-purple-100 py-8 px-4 flex flex-col items-center">
-      <div className="w-full max-w-3xl bg-white shadow-xl rounded-lg p-6 md:p-8">
-        <header className="mb-6 flex flex-col items-center sm:flex-row sm:justify-between sm:items-center">
-          <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-indigo-700 break-keep mb-2 sm:mb-0 text-center sm:text-left">성경읽기 챌린지</h1>
-          <div className="text-sm sm:text-right">
-            <p className="text-sm text-gray-600">환영합니다, {currentUser.username}님!</p>
-            <button onClick={handleLogout} className="bg-red-500 hover:bg-red-600 text-white text-xs font-semibold py-1 px-3 rounded-md shadow transition duration-150 ease-in-out">로그아웃</button>
+        {/* 안내 메시지: 비밀번호 변경 필요 사용자 또는 신규 사용자 대상 */}
+        {(!currentUser || (currentUser && (currentUser as User).must_change_password)) && !showPasswordChangePrompt && (
+          <div className="mb-4 p-3 bg-yellow-50 border border-yellow-300 rounded-md text-sm text-yellow-700 text-center">
+            <p>
+              <span className="font-semibold">기존 사용자 또는 신규 사용자 안내:</span><br />
+              아이디 입력 후, 임시 비밀번호 <strong className="font-bold">1234</strong>로 로그인하세요.<br />
+              로그인 후 즉시 <strong className="font-bold">새로운 비밀번호로 변경</strong>하셔야 정상적인 이용이 가능합니다.
+            </p>
           </div>
-        </header>
+        )}
+        <AuthForm onAuth={handleAuth} onRegister={handleRegister} title="로그인 또는 사용자 등록" />
+        {appError && <p className="mt-4 text-red-500">{appError}</p>}
 
         {userOverallProgress && (userOverallProgress.lastReadChapter > 0 || userOverallProgress.lastReadVerse > 0) && readingState === ReadingState.IDLE && (
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md text-sm text-blue-700">
@@ -553,8 +646,76 @@ const App: React.FC = () => {
                 <p>현재 사용 중인 브라우저에서는 음성 인식 기능을 지원하지 않습니다. Chrome, Edge, Safari 최신 버전을 사용해 주세요.</p>
             </div>
         )}
+      </div>
+    );
+  } // End of if (!currentUser)
 
-{readingState === ReadingState.IDLE && (
+  // Main application view when currentUser is defined
+  return (
+    <div className="container mx-auto p-4 max-w-4xl bg-amber-50 shadow-lg rounded-lg">
+      {currentUser && (currentUser as User).must_change_password && showPasswordChangePrompt && (
+        // This condition ensures the form only shows if needed and explicitly triggered
+        // We might want a separate state like `isPasswordChangeModalOpen` for better control
+        // For now, piggybacking on showPasswordChangePrompt for simplicity
+        // The password change form JSX starts directly below:
+        <div className="p-4 mb-4 text-sm text-orange-700 bg-orange-100 rounded-lg border border-orange-300 shadow-md" role="alert">
+          <h3 className="font-bold text-lg mb-2">비밀번호 변경 필요</h3>
+          <p className="mb-1">
+            현재 임시 비밀번호(1234)를 사용하고 있습니다. 보안을 위해 즉시 새 비밀번호를 설정해주세요.
+          </p>
+          <form onSubmit={handlePasswordChangeSubmit} className="mt-3 space-y-3">
+            <div>
+              <label htmlFor="newPassword" className="block text-xs font-medium text-orange-800">새 비밀번호:</label>
+              <input 
+                type="password" 
+                id="newPassword" 
+                value={newPassword} 
+                onChange={(e) => setNewPassword(e.target.value)} 
+                className="mt-0.5 block w-full px-2 py-1 text-xs text-orange-900 bg-orange-50 border border-orange-300 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 placeholder-orange-400"
+                placeholder="새 비밀번호 입력"
+              />
+            </div>
+            <div>
+              <label htmlFor="confirmNewPassword" className="block text-xs font-medium text-orange-800">새 비밀번호 확인:</label>
+              <input 
+                type="password" 
+                id="confirmNewPassword" 
+                value={confirmNewPassword} 
+                onChange={(e) => setConfirmNewPassword(e.target.value)} 
+                className="mt-0.5 block w-full px-2 py-1 text-xs text-orange-900 bg-orange-50 border border-orange-300 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 placeholder-orange-400"
+                placeholder="새 비밀번호 다시 입력"
+              />
+            </div>
+            {passwordChangeError && <p className="text-xs text-red-600">{passwordChangeError}</p>}
+            {passwordChangeSuccess && <p className="text-xs text-green-600">{passwordChangeSuccess}</p>}
+            <div className="flex items-center justify-between">
+              <button 
+                type="submit" 
+                className="px-3 py-1.5 text-xs font-semibold text-white bg-orange-600 rounded hover:bg-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-1"
+              >
+                비밀번호 변경하기
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  setShowPasswordChangePrompt(false);
+                  setPasswordChangeError(null);
+                  setPasswordChangeSuccess(null);
+                  setNewPassword('');
+                  setConfirmNewPassword('');
+                }} 
+                className="px-3 py-1.5 text-xs font-medium text-orange-700 bg-transparent border border-orange-700 rounded hover:bg-orange-200 focus:ring-2 focus:ring-orange-300"
+              >
+                나중에 변경
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {/* TODO: Consider adding a header here for authenticated users, e.g., user display and logout button */}
+      {/* TODO: Consider adding a header here for authenticated users, e.g., user display and logout button */}
+      {/* The following JSX was previously misplaced and is now part of the main authenticated view */}
+      {readingState === ReadingState.IDLE && (
           <>
             {/* Overall Bible Progress Display */}
             {currentUser && totalBibleChapters > 0 && (
@@ -601,8 +762,51 @@ const App: React.FC = () => {
               initialSelection={{ book: selectedBookForSelector, chapter: startChapterForSelector }}
               completedChapters={userOverallProgress?.completedChapters}
             />
-            <Leaderboard key={userOverallProgress ? `lb-${userOverallProgress.lastReadBook}-${userOverallProgress.lastReadChapter}-${userOverallProgress.lastReadVerse}` : 'lb-no-progress'} />
+
+            {/* Toggle Button for Book Completion Status - MOVED HERE */}
+            {currentUser && userOverallProgress && (
+              <div className="my-4">
+                <button 
+                  onClick={() => setShowBookCompletionStatus(!showBookCompletionStatus)}
+                  className="w-full px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                >
+                  {showBookCompletionStatus ? '권별 완독 현황 숨기기' : '권별 완독 현황 보기'}
+                </button>
+              </div>
+            )}
+
+            {/* Conditional Rendering for BookCompletionStatus component - MOVED HERE */}
+            {currentUser && userOverallProgress && showBookCompletionStatus && (
+              <BookCompletionStatus 
+                userProgress={userOverallProgress} 
+                availableBooks={AVAILABLE_BOOKS} 
+              />
+            )}
+
+            <div className="mt-6 text-center">
+              <button
+                onClick={() => setCurrentView('LEADERBOARD')}
+                className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-lg shadow-md transition duration-150 ease-in-out"
+              >
+                👣 함께 걷는 여정
+              </button>
+            </div>
           </>
+        )}
+
+        {readingState === ReadingState.IDLE && currentView === 'LEADERBOARD' && (
+          <div className="my-4 p-4 bg-gray-50 rounded-lg shadow">
+            <h3 className="text-xl font-semibold text-gray-800 mb-4 text-center">👣 함께 걷는 말씀의 발자취</h3>
+            <Leaderboard key={userOverallProgress ? `lb-${userOverallProgress.lastReadBook}-${userOverallProgress.lastReadChapter}-${userOverallProgress.lastReadVerse}` : 'lb-no-progress'} />
+            <div className="mt-6 text-center">
+              <button
+                onClick={() => setCurrentView('IDLE_SETUP')}
+                className="px-6 py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-lg shadow-md transition duration-150 ease-in-out"
+              >
+                📖 읽기 설정으로 돌아가기
+              </button>
+            </div>
+          </div>
         )}
 
         {readingState === ReadingState.READING && sessionTargetVerses.length > 0 && (
@@ -657,7 +861,7 @@ const App: React.FC = () => {
               </>
             )}
             {readingState === ReadingState.SESSION_COMPLETED && (
-              <div className="text-center p-6 bg-green-50 border-2 border-green-500 rounded-lg shadow-md">
+              <div className="fixed top-1/4 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 text-center p-6 bg-green-100 border-2 border-green-600 rounded-lg shadow-xl max-w-md w-11/12">
                 <h2 className="text-2xl font-bold text-green-700 mb-3">이번 세션 읽기 완료!</h2>
                 <p className="text-lg text-gray-700 mb-4 whitespace-pre-wrap">{sessionCertificationMessage}</p>
                 <button 
@@ -673,13 +877,16 @@ const App: React.FC = () => {
           </>
         )}
         
-        <footer className="mt-12 pt-6 border-t border-gray-300 text-center text-sm text-gray-500">
-            {new Date().getFullYear()} Bible Reading Companion | <span className="font-semibold">포도나무교회</span><br />
-            <span>음성 인식 정확도를 위해 조용한 곳을 권장합니다.</span>
+        <footer className="mt-12 pt-6 border-t border-gray-300 text-center text-xs sm:text-sm text-gray-500">
+        <div className="mt-10 text-center text-xs text-gray-400 font-sans select-none">
+      <div className="mb-1">포도나무교회 &nbsp;|&nbsp; Dev: 이종림 &nbsp;|&nbsp; <a href="mailto:luxual8@gmail.com" className="underline hover:text-amber-700">문의 및 개선사항</a></div>
+      <div className="mb-1">© 2025 이종림. All rights reserved.</div>
+      <div className="mb-1">Copyright © 2025 Lee Jongrim. All rights reserved.</div>
+      <div className="italic text-[11px] text-gray-300">음성 인식 정확도를 위해 조용한 환경을 권장합니다.</div>
+      </div>
         </footer>
       </div>
-    </div>
   );
-};
+}; 
 
 export default App;

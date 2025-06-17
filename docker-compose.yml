@@ -30,7 +30,8 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./server:/app # Mount the server code, database.json will be ignored by new logic
+      - ./server:/app # Mount the server code
+      - /app/node_modules # Preserve node_modules installed in the container
     networks:
       - app-network
 

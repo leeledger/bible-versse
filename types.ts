@@ -22,7 +22,9 @@ export enum ReadingState {
 }
 
 export interface User {
+  id?: number; // Optional: as it might not be available immediately or in all contexts
   username: string;
+  must_change_password?: boolean; // Optional: To indicate if user needs to change password
 }
 
 // Stores the user's overall last read point ("bookmark")

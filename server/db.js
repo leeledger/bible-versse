@@ -72,10 +72,31 @@ const initializeDatabase = async () => {
     await pool.query(createReadingProgressTable);
     await pool.query(createCompletedChaptersTable);
     await pool.query(createReadingHistoryTable);
-    console.log('Database tables checked/created successfully.');
+
+    // Add password column if it doesn't exist
+    const passwordColExists = await pool.query(`
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name='users' AND column_name='password' AND table_schema = 'public'
+    `);
+    if (passwordColExists.rowCount === 0) {
+      await pool.query('ALTER TABLE users ADD COLUMN password VARCHAR(255) NULL');
+      console.log("Column 'password' added to 'users' table.");
+    }
+
+    // Add must_change_password column if it doesn't exist
+    const mustChangePasswordColExists = await pool.query(`
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name='users' AND column_name='must_change_password' AND table_schema = 'public'
+    `);
+    if (mustChangePasswordColExists.rowCount === 0) {
+      await pool.query('ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT TRUE');
+      console.log("Column 'must_change_password' added to 'users' table.");
+    }
+
+    console.log('Database tables checked/created/altered successfully.');
   } catch (err) {
-    console.error('Error creating database tables:', err);
-    process.exit(1); // Exit if tables can't be created
+    console.error('Error initializing database (creating/altering tables):', err);
+    process.exit(1); // Exit if tables can't be created/altered
   }
 };
 

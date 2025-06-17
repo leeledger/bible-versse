@@ -122,10 +122,10 @@ const Leaderboard: React.FC = () => {
             {leaderboardData.map((entry) => (
               <tr key={entry.username} className="hover:bg-gray-50 transition-colors duration-150">
                 <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{entry.rank}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{entry.username}</td>
-                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{entry.progressDisplay}</td>
+                <td className="px-4 py-3 text-sm text-gray-700 break-words">{entry.username}</td>
+                <td className="px-4 py-3 text-sm text-gray-600 break-words">{entry.progressDisplay}</td>
                 <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{entry.completionRate.toFixed(1)}%</td>
-                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                <td className="px-3 py-4 text-sm text-gray-500 break-words">
                   {entry.lastProgressUpdateDate 
                       ? new Date(entry.lastProgressUpdateDate).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replace(/\.$/, '').replace(/\./g, '-').replace(' - ', ' ') // YYYY-MM-DD HH:mm, .replace(/\.$/, '') for potential trailing dot from seconds
                       : ''}

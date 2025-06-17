@@ -4,6 +4,8 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const db = require('./db'); // Import the new db module
+const bcrypt = require('bcrypt');
+const saltRounds = 10; // For bcrypt hashing
 
 const app = express();
 const PORT = 3001;
@@ -17,35 +19,157 @@ app.use(bodyParser.json());
 // const writeDatabase = (data) => { ... };
 
 
-// Endpoint to ensure a user exists, creating if not. Called on login.
-app.post('/api/users/ensure', async (req, res) => {
-  const { username } = req.body;
-  if (!username) {
-    return res.status(400).json({ message: 'Username is required' });
+// Endpoint for user registration
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
+
+  if (password.length < 4) { // Basic password length validation
+    return res.status(400).json({ message: 'Password must be at least 4 characters long' });
   }
 
   try {
-    let userResult = await db.query('SELECT id, username FROM users WHERE username = $1', [username]);
-    let user;
-
-    if (userResult.rows.length > 0) {
-      user = userResult.rows[0];
-      console.log(`[POST /api/users/ensure] User ${username} (ID: ${user.id}) already exists.`);
-    } else {
-      const newUserResult = await db.query(
-        'INSERT INTO users (username) VALUES ($1) RETURNING id, username',
-        [username]
-      );
-      user = newUserResult.rows[0];
-      console.log(`[POST /api/users/ensure] Created new user ${username} with ID: ${user.id}`);
+    // Check if user already exists
+    const existingUserResult = await db.query('SELECT id FROM users WHERE username = $1', [username]);
+    if (existingUserResult.rows.length > 0) {
+      return res.status(409).json({ message: 'Username already exists' });
     }
-    // Return the user object (or just a success message)
-    res.status(200).json({ id: user.id, username: user.username, message: 'User ensured successfully.' });
+
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Insert new user with hashed password. 'must_change_password' defaults to TRUE by DB schema.
+    const newUserResult = await db.query(
+      'INSERT INTO users (username, password, must_change_password) VALUES ($1, $2, $3) RETURNING id, username, must_change_password',
+      [username, hashedPassword, false]
+    );
+    const newUser = newUserResult.rows[0];
+    console.log(`[POST /api/register] Created new user ${username} with ID: ${newUser.id}`);
+    
+    res.status(201).json({ 
+      id: newUser.id, 
+      username: newUser.username, 
+      message: '사용자 등록이 완료되었습니다. 로그인해주세요.' 
+    });
   } catch (error) {
-    console.error(`[POST /api/users/ensure] Error ensuring user ${username}:`, error);
-    res.status(500).json({ message: 'Error ensuring user in database' });
+    console.error(`[POST /api/register] Error registering user ${username}:`, error);
+    if (error.code === '23505') { // Unique violation for username (just in case the previous check missed due to race condition)
+        return res.status(409).json({ message: 'Username already exists.' });
+    }
+    res.status(500).json({ message: 'Error registering user' });
   }
 });
+
+// Endpoint for user login
+app.post('/api/login', async (req, res) => {
+  const { username, password: providedPassword } = req.body;
+  if (!username || !providedPassword) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
+
+  try {
+    const userResult = await db.query('SELECT id, username, password, must_change_password FROM users WHERE username = $1', [username]);
+
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid username or password' });
+    }
+
+    const user = userResult.rows[0];
+    console.log('[POST /api/login] User data from DB:', JSON.stringify(user, null, 2)); // Log the user object
+
+    // Case 1: Existing user, password field is NULL (migrated user, needs to set initial password)
+    // Default temporary password is '1234'
+    if (user.password === null) {
+      if (providedPassword === '1234' && user.must_change_password) {
+        console.log(`[POST /api/login] User ${username} (ID: ${user.id}) logged in with temporary password. Must change.`);
+        return res.status(200).json({
+          id: user.id,
+          username: user.username,
+          must_change_password: true, // Explicitly true
+          message: 'Login successful. Please change your temporary password.'
+        });
+      } else {
+        // If password is null and provided password is not the temporary one, or if they shouldn't be changing it (e.g. must_change_password is false)
+        return res.status(401).json({ message: 'Invalid username or password, or temporary password setup issue.' });
+      }
+    }
+
+    // Case 2: User has a hashed password set (i.e., user.password is not null)
+    // This block is executed only if user.password was NOT null.
+    let passwordMatch = false;
+    try {
+      // Now, if user.password is not null, it MUST be a string (the hash)
+      if (typeof user.password !== 'string') {
+        console.error('[POST /api/login] User password from DB is not a string:', user.password);
+        // Potentially treat as a login failure or handle as a specific error case
+        return res.status(500).json({ message: 'User data integrity issue.' });
+      }
+      passwordMatch = await bcrypt.compare(providedPassword, user.password);
+    } catch (bcryptError) {
+      console.error('[POST /api/login] Error during bcrypt.compare:', bcryptError);
+      return res.status(500).json({ message: 'Error during password verification.' });
+    }
+
+    // This check is now correctly placed after confirming user.password is a string (hash)
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Invalid username or password' });
+    }
+
+    console.log(`[POST /api/login] User ${username} (ID: ${user.id}) logged in successfully.`);
+    res.status(200).json({
+      id: user.id,
+      username: user.username,
+      must_change_password: user.must_change_password,
+      message: 'Login successful'
+    });
+
+  } catch (error) {
+    console.error(`[POST /api/login] Error logging in user ${username}:`, error);
+    res.status(500).json({ message: 'Error logging in' });
+  }
+});
+
+// Endpoint to change user password
+app.post('/api/users/change-password', async (req, res) => {
+  const { userId, newPassword } = req.body;
+
+  if (!userId || !newPassword) {
+    return res.status(400).json({ message: 'User ID and new password are required.' });
+  }
+
+  if (typeof newPassword !== 'string' || newPassword.length < 4) { // Basic validation
+    return res.status(400).json({ message: 'Password must be a string and at least 4 characters long.' });
+  }
+
+  try {
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update the user's password and set must_change_password to false
+    const updateResult = await db.query(
+      'UPDATE users SET password = $1, must_change_password = $2 WHERE id = $3 RETURNING id, username, must_change_password',
+      [hashedPassword, false, userId]
+    );
+
+    if (updateResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const updatedUser = updateResult.rows[0];
+    console.log(`[POST /api/users/change-password] Password changed successfully for user ID: ${userId}`);
+    res.status(200).json({
+      message: 'Password changed successfully.',
+      user: updatedUser
+    });
+
+  } catch (error) {
+    console.error(`[POST /api/users/change-password] Error changing password for user ID ${userId}:`, error);
+    res.status(500).json({ message: 'Error changing password.' });
+  }
+});
+
 
 // Get user progress
 app.get('/api/progress/:username', async (req, res) => {
@@ -220,37 +344,6 @@ app.get('/api/progress/:username/completedChapters', async (req, res) => {
   } catch (error) {
     console.error(`[GET DB] Error fetching completed chapters for ${username}:`, error);
     res.status(500).json({ message: 'Error fetching completed chapters' });
-  }
-});
-
-// Mark a chapter as completed for a user
-app.post('/api/progress/:username/markChapterCompleted', (req, res) => {
-  const db = readDatabase();
-  const { username } = req.params;
-  const { book, chapter } = req.body;
-
-  if (!book || typeof chapter !== 'number') {
-    return res.status(400).json({ message: 'Book and chapter are required and chapter must be a number.' });
-  }
-
-  if (!db[username]) {
-    // Initialize user if not exists, though ideally user should exist from login/progress save
-    db[username] = { lastReadBook: '', lastReadChapter: 0, lastReadVerse: 0, history: [], completedChapters: [] };
-  }
-  
-  if (!db[username].completedChapters) {
-    db[username].completedChapters = [];
-  }
-
-  const chapterKey = `${book}:${chapter}`;
-  if (!db[username].completedChapters.includes(chapterKey)) {
-    db[username].completedChapters.push(chapterKey);
-    writeDatabase(db);
-    console.log(`[POST] Marked chapter ${chapterKey} as completed for ${username}.`);
-    res.status(200).json({ message: 'Chapter marked as completed.', completedChapters: db[username].completedChapters });
-  } else {
-    console.log(`[POST] Chapter ${chapterKey} already marked as completed for ${username}.`);
-    res.status(200).json({ message: 'Chapter already completed.', completedChapters: db[username].completedChapters });
   }
 });
 

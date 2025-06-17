@@ -9,18 +9,25 @@ export const progressService = {
     return AVAILABLE_BOOKS.reduce((sum, book) => sum + book.chapterCount, 0);
   },
   async loadUserProgress(username: string): Promise<UserProgress> {
+    console.log(`[progressService.ts] loadUserProgress CALLED for user: ${username}`);
     try {
       const response = await fetch(`${API_URL}/${username}`);
+      console.log(`[progressService.ts] loadUserProgress - User: ${username}, Response status: ${response.status}, Content-Length: ${response.headers.get('content-length')}`);
       if (!response.ok || response.headers.get('content-length') === '0') {
         console.log(`'${username}'에 대한 진행 상황을 찾을 수 없어 기본값을 반환합니다.`);
         return { lastReadBook: '', lastReadChapter: 0, lastReadVerse: 0, history: [], completedChapters: [] };
       }
       const progress = await response.json();
+      console.log(`[progressService.ts] loadUserProgress - User: ${username}, Parsed progress from API:`, JSON.stringify(progress));
+      const finalProgress = { ...progress, completedChapters: progress.completedChapters || [] };
+      console.log(`[progressService.ts] loadUserProgress - User: ${username}, Final progress object to be returned:`, JSON.stringify(finalProgress));
       // Ensure completedChapters is always an array, even if not present in older data
-      return { ...progress, completedChapters: progress.completedChapters || [] };
+      return finalProgress;
     } catch (error) {
-      console.error('사용자 진행 상황 로딩 중 오류 발생:', error);
-      return { lastReadBook: '', lastReadChapter: 0, lastReadVerse: 0, history: [], completedChapters: [] };
+      console.error(`[progressService.ts] loadUserProgress - User: ${username}, Error loading user progress:`, error);
+      const errorProgress = { lastReadBook: '', lastReadChapter: 0, lastReadVerse: 0, history: [], completedChapters: [] };
+      console.log(`[progressService.ts] loadUserProgress - User: ${username}, Returning default progress due to error.`);
+      return errorProgress;
     }
   },
 
