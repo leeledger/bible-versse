@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#f3f3ff"/>
+  <path d="M600 130c-110 0-200 90-200 200s90 200 200 200 200-90 200-200-90-200-200-200z" fill="#e9d5ff" stroke="#8856ec" stroke-width="12"/>
+  <path d="M600 130h70c66 0 120 54 120 120s-54 120-120 120H480c-66 0-120 54-120 120s54 120 120 120h120V130z" fill="#f8f0ff" stroke="#8856ec" stroke-width="12"/>
+  <path d="M600 130v370M480 250h240" stroke="#8856ec" stroke-width="12"/>
+  <text x="600" y="530" font-family="Arial, sans-serif" font-size="48" font-weight="bold" text-anchor="middle" fill="#4a2d8b">말씀의 열매</text>
+  <text x="600" y="590" font-family="Arial, sans-serif" font-size="36" text-anchor="middle" fill="#4a2d8b">성경읽기 동행</text>
+</svg>
