@@ -105,35 +105,116 @@ const Leaderboard: React.FC = () => {
   }
 
   return (
-    <div className="mt-8 p-4 sm:p-6 bg-white shadow-xl rounded-lg">
-      <h2 className="text-xl sm:text-2xl font-bold text-center text-indigo-700 mb-6 break-keep">완독률 순위</h2>
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">순위</th>
-              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">사용자명</th>
-              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">최근 읽기</th>
-              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">완독률</th>
-              <th scope="col" className="px-4 py-3.5 text-left text-sm font-semibold text-gray-900 whitespace-nowrap">업데이트 일시</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {leaderboardData.map((entry) => (
-              <tr key={entry.username} className="hover:bg-gray-50 transition-colors duration-150">
-                <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">{entry.rank}</td>
-                <td className="px-4 py-3 text-sm text-gray-700 break-words">{entry.username}</td>
-                <td className="px-4 py-3 text-sm text-gray-600 break-words">{entry.progressDisplay}</td>
-                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{entry.completionRate.toFixed(1)}%</td>
-                <td className="px-3 py-4 text-sm text-gray-500 break-words">
-                  {entry.lastProgressUpdateDate 
-                      ? new Date(entry.lastProgressUpdateDate).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).replace(/\.$/, '').replace(/\./g, '-').replace(' - ', ' ') // YYYY-MM-DD HH:mm, .replace(/\.$/, '') for potential trailing dot from seconds
-                      : ''}
-                </td>
+    <div className="mt-8 bg-gradient-to-br from-indigo-50 to-purple-50 shadow-xl rounded-2xl overflow-hidden border border-indigo-100">
+      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 py-4 px-6">
+        <h2 className="text-xl sm:text-2xl font-bold text-center text-white mb-1 break-keep drop-shadow-sm">✨ 완독률 순위 ✨</h2>
+        <p className="text-center text-indigo-100 text-sm">함께 걷는 말씀의 여정</p>
+      </div>
+      
+      {/* 모바일에서는 카드 형태로, 데스크톱에서는 테이블 형태로 표시 */}
+      <div className="md:hidden">
+        {/* 모바일 카드 뷰 */}
+        <div className="p-4 space-y-4">
+          {leaderboardData.map((entry) => (
+            <div 
+              key={entry.username} 
+              className={`rounded-xl p-4 shadow-md transition-all duration-300 hover:shadow-lg ${entry.rank <= 3 ? 'bg-gradient-to-r from-amber-50 to-yellow-50 border border-amber-200' : 'bg-white'}`}
+            >
+              <div className="flex items-center mb-3">
+                <div className={`
+                  ${entry.rank === 1 ? 'bg-amber-500 text-white' : 
+                    entry.rank === 2 ? 'bg-gray-400 text-white' : 
+                    entry.rank === 3 ? 'bg-amber-700 text-white' : 
+                    'bg-indigo-100 text-indigo-800'} 
+                  rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm mr-3
+                `}>
+                  {entry.rank}
+                </div>
+                <div className="font-bold text-lg text-indigo-900 flex-grow truncate">{entry.username}</div>
+                <div className="text-sm font-semibold bg-indigo-100 text-indigo-800 px-2 py-1 rounded-lg">
+                  {entry.completionRate.toFixed(1)}%
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 gap-2 text-sm">
+                <div className="flex">
+                  <span className="text-gray-500 w-20">최근 읽기:</span>
+                  <span className="text-gray-800 font-medium">{entry.progressDisplay}</span>
+                </div>
+                <div className="flex">
+                  <span className="text-gray-500 w-20">업데이트:</span>
+                  <span className="text-gray-600">
+                    {entry.lastProgressUpdateDate 
+                      ? new Date(entry.lastProgressUpdateDate).toLocaleString('ko-KR', { 
+                          month: '2-digit', 
+                          day: '2-digit', 
+                          hour: '2-digit', 
+                          minute: '2-digit', 
+                          hour12: false 
+                        }).replace(/\.$/, '').replace(/\./g, '-').replace(' - ', ' ')
+                      : '기록 없음'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      
+      {/* 데스크톱 테이블 뷰 */}
+      <div className="hidden md:block">
+        <div className="p-6">
+          <table className="w-full">
+            <thead>
+              <tr className="text-left border-b-2 border-indigo-200">
+                <th className="pb-3 px-4 text-indigo-800 font-bold">순위</th>
+                <th className="pb-3 px-4 text-indigo-800 font-bold">사용자명</th>
+                <th className="pb-3 px-4 text-indigo-800 font-bold">최근 읽기</th>
+                <th className="pb-3 px-4 text-indigo-800 font-bold">완독률</th>
+                <th className="pb-3 px-4 text-indigo-800 font-bold">업데이트 일시</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {leaderboardData.map((entry) => (
+                <tr 
+                  key={entry.username} 
+                  className={`border-b border-indigo-50 hover:bg-indigo-50/50 transition-colors ${entry.rank <= 3 ? 'bg-amber-50/50' : ''}`}
+                >
+                  <td className="py-4 px-4">
+                    <div className={`
+                      ${entry.rank === 1 ? 'bg-amber-500 text-white' : 
+                        entry.rank === 2 ? 'bg-gray-400 text-white' : 
+                        entry.rank === 3 ? 'bg-amber-700 text-white' : 
+                        'bg-indigo-100 text-indigo-800'} 
+                      rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm
+                    `}>
+                      {entry.rank}
+                    </div>
+                  </td>
+                  <td className="py-4 px-4 font-medium text-gray-800">{entry.username}</td>
+                  <td className="py-4 px-4 text-gray-700">{entry.progressDisplay}</td>
+                  <td className="py-4 px-4">
+                    <div className="bg-indigo-100 text-indigo-800 px-2 py-1 rounded-lg inline-block font-medium">
+                      {entry.completionRate.toFixed(1)}%
+                    </div>
+                  </td>
+                  <td className="py-4 px-4 text-gray-600">
+                    {entry.lastProgressUpdateDate 
+                      ? new Date(entry.lastProgressUpdateDate).toLocaleString('ko-KR', { 
+                          year: 'numeric', 
+                          month: '2-digit', 
+                          day: '2-digit', 
+                          hour: '2-digit', 
+                          minute: '2-digit', 
+                          hour12: false 
+                        }).replace(/\.$/, '').replace(/\./g, '-').replace(' - ', ' ')
+                      : ''}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

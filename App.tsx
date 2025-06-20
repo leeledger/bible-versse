@@ -11,7 +11,8 @@ import ChapterSelector from './components/ChapterSelector';
 import Leaderboard from './components/Leaderboard';
 import BibleProgressOverview from './components/BibleProgressOverview'; 
 import BookCompletionStatus from './components/BookCompletionStatus'; // Added import
-import { calculateSimilarity } from './utils';
+import HallOfFame from './components/HallOfFame';
+import { calculateSimilarity, containsDifficultWord } from './utils';
 // import { BibleData, BibleBook, BibleChapter } from './types'; // Ensured this is commented out or removed
 import rawBibleData from './bible_fixed.json';
 
@@ -31,8 +32,9 @@ const normalizeText = (text: string): string => {
 };
 
 const FUZZY_MATCH_LOOKBACK_FACTOR = 1.3; // 1.8에서 하향 조정. 이전 절 텍스트가 비교에 포함되는 것을 방지 
-const FUZZY_MATCH_SIMILARITY_THRESHOLD = 60; // 70에서 하향 조정. 발음이 어려운 단어 인식률 개선
-const MINIMUM_READ_LENGTH_RATIO = 0.9; // Must read at least 90% of the verse's length
+const FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT = 60; // 기본값
+const FUZZY_MATCH_SIMILARITY_THRESHOLD_DIFFICULT = 50; // 어려운 단어 포함시
+const MINIMUM_READ_LENGTH_RATIO = 0.9; // 항상 동일하게 적용
 const ABSOLUTE_READ_DIFFERENCE_THRESHOLD = 5; // Or be within 5 characters of the end
 
 const initialSessionProgress: SessionReadingProgress = {
@@ -44,6 +46,9 @@ const initialSessionProgress: SessionReadingProgress = {
 type ViewState = 'IDLE_SETUP' | 'LEADERBOARD';
 
 const App: React.FC = () => {
+  const [showHallOfFame, setShowHallOfFame] = useState(false);
+  const [isRestartingForNextVerseOnIOS, setIsRestartingForNextVerseOnIOS] = useState(false);
+  const [bibleResetLoading, setBibleResetLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userOverallProgress, setUserOverallProgress] = useState<UserProgress | null>(null);
   const [currentView, setCurrentView] = useState<ViewState>('IDLE_SETUP');
@@ -55,6 +60,36 @@ const App: React.FC = () => {
   const [matchedVersesContentForSession, setMatchedVersesContentForSession] = useState<string>(''); // Accumulated for current session display
   const [isRetryingVerse, setIsRetryingVerse] = useState(false);
   const [readingState, setReadingState] = useState<ReadingState>(ReadingState.IDLE);
+
+  // Prevent pull-to-refresh on mobile during speech recognition
+  useEffect(() => {
+    let startY = 0;
+    let maybePrevent = false;
+    const onTouchStart = (e: TouchEvent) => {
+      if (window.scrollY === 0 && e.touches.length === 1) {
+        startY = e.touches[0].clientY;
+        maybePrevent = true;
+      } else {
+        maybePrevent = false;
+      }
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!maybePrevent) return;
+      const currentY = e.touches[0].clientY;
+      if (currentY - startY > 5) {
+        // User is pulling down from the top
+        e.preventDefault();
+      }
+    };
+    if (readingState === ReadingState.LISTENING) {
+      document.addEventListener('touchstart', onTouchStart, { passive: false });
+      document.addEventListener('touchmove', onTouchMove, { passive: false });
+    }
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart);
+      document.removeEventListener('touchmove', onTouchMove);
+    };
+  }, [readingState]);
   
   const [sessionProgress, setSessionProgress] = useState<SessionReadingProgress>(initialSessionProgress);
 
@@ -75,6 +110,11 @@ const App: React.FC = () => {
   const [endChapterForSelector, setEndChapterForSelector] = useState<number>(1);
   const [startVerseForSelector, setStartVerseForSelector] = useState<number>(1);
   const [showBookCompletionStatus, setShowBookCompletionStatus] = useState(false);
+
+  // iOS 기기 감지
+  const isIOS = useMemo(() => {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+  }, []);
 
   const { 
     isListening, 
@@ -304,13 +344,16 @@ const App: React.FC = () => {
 
     const similarity = calculateSimilarity(normalizedTargetVerseText, bufferPortionToCompare);
 
-    // 매칭 성공 시에만 다음 절로 진행
+    // 절별 난이도 체크 (어려운 단어 포함시 임계치 완화)
+    const isDifficult = containsDifficultWord(currentTargetVerseForSession.text);
+    const similarityThreshold = isDifficult ? FUZZY_MATCH_SIMILARITY_THRESHOLD_DIFFICULT : FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT;
+
     const isLengthSufficientByRatio = bufferPortionToCompare.length >= normalizedTargetVerseText.length * MINIMUM_READ_LENGTH_RATIO;
     const isLengthSufficientByAbsoluteDiff = (normalizedTargetVerseText.length - bufferPortionToCompare.length) <= ABSOLUTE_READ_DIFFERENCE_THRESHOLD && bufferPortionToCompare.length > 0;
 
-    console.log(`[App.tsx] Matching Details - Similarity: ${similarity} (Threshold: ${FUZZY_MATCH_SIMILARITY_THRESHOLD}), LengthRatioSufficient: ${isLengthSufficientByRatio}, LengthAbsoluteSufficient: ${isLengthSufficientByAbsoluteDiff}`);
+    console.log(`[App.tsx] Matching Details - Similarity: ${similarity} (Threshold: ${similarityThreshold}), LengthRatioSufficient: ${isLengthSufficientByRatio}, LengthAbsoluteSufficient: ${isLengthSufficientByAbsoluteDiff}, Difficult: ${isDifficult}`);
     console.log(`[App.tsx] Comparing Buffer: "${bufferPortionToCompare}" with Target: "${normalizedTargetVerseText}"`);
-    if (similarity >= FUZZY_MATCH_SIMILARITY_THRESHOLD && (isLengthSufficientByRatio || isLengthSufficientByAbsoluteDiff)) {
+    if (similarity >= similarityThreshold && (isLengthSufficientByRatio || isLengthSufficientByAbsoluteDiff)) {
       console.log(`[App.tsx] Verse matched! Index: ${currentVerseIndexInSession}, Target length: ${sessionTargetVerses.length}`);
       setMatchedVersesContentForSession(prev => prev + `${currentTargetVerseForSession.book} ${currentTargetVerseForSession.chapter}:${currentTargetVerseForSession.verse} - ${currentTargetVerseForSession.text}\n`);
       
@@ -361,22 +404,23 @@ const App: React.FC = () => {
             };
             // Calculate newly completed chapters from this session
             const actuallyReadVersesInSession = sessionTargetVerses.slice(sessionProgress.sessionInitialSkipCount);
-            const uniqueChaptersTargeted = [...new Set(actuallyReadVersesInSession.map(v => `${v.book}:${v.chapter}`))];
-            
+            const uniqueChaptersTargeted = [...new Set(actuallyReadVersesInSession.map(v => `${v.book}:${v.chapter}`))];            
             const chaptersToMarkAsComplete = uniqueChaptersTargeted.filter(chapterKey => {
                 const [book, chapterStr] = chapterKey.split(':');
                 const chapter = parseInt(chapterStr, 10);
-
-                // All verses for this chapter that were part of the session target
-                const versesForThisChapterInTarget = sessionTargetVerses.filter(v => v.book === book && v.chapter === chapter);
-
-                // Check if every single one of them was read in this session
-                return versesForThisChapterInTarget.length > 0 && versesForThisChapterInTarget.every(targetVerse => 
-                    actuallyReadVersesInSession.some(readVerse => 
-                        readVerse.book === targetVerse.book && 
-                        readVerse.chapter === targetVerse.chapter &&
-                        readVerse.verse === targetVerse.verse
-                    )
+                
+                // 해당 장의 마지막 절을 찾습니다
+                const bookInfo = AVAILABLE_BOOKS.find(b => b.name === book);
+                if (!bookInfo) return false;
+                
+                // 해당 장의 마지막 절 번호를 가져옵니다
+                const lastVerseNumber = bookInfo.versesPerChapter[chapter - 1] || 0;
+                
+                // 이 세션에서 읽은 절들 중에 해당 장의 마지막 절이 있는지 확인합니다
+                return actuallyReadVersesInSession.some(readVerse => 
+                    readVerse.book === book && 
+                    readVerse.chapter === chapter &&
+                    readVerse.verse === lastVerseNumber
                 );
             });
             
@@ -405,14 +449,21 @@ const App: React.FC = () => {
          setCurrentVerseIndexInSession(prevIdx => prevIdx + 1); // 다음 절로 이동
 
          setTranscriptBuffer(''); // Clear buffer for next verse
-         resetTranscript(); // Reset STT for next verse
+          if (isIOS) {
+            console.log('[App.tsx] iOS - Restarting speech recognition for next verse using retry mechanism');
+            // 다시읽기 버튼과 동일한 로직 사용
+            setTranscriptBuffer(''); // 버퍼 초기화
+            resetTranscript(); // 트랜스크립트 초기화
+            stopListening(); // 음성 인식 중지
+            setIsRetryingVerse(true); // 이 플래그가 useEffect에서 마이크를 다시 켜도록 함
+          } else {
+            resetTranscript(); // 비iOS 기기에서는 단순히 초기화만
+          }
       }
     }
     // 매칭 실패 시 인덱스 증가/세션 종료 없음
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcriptBuffer, readingState, currentTargetVerseForSession, currentUser, sessionTargetVerses, userOverallProgress]);
-
-
 
   useEffect(() => {
     if (sttError) {
@@ -765,15 +816,67 @@ const App: React.FC = () => {
 
             {/* Toggle Button for Book Completion Status - MOVED HERE */}
             {currentUser && userOverallProgress && (
-              <div className="my-4">
-                <button 
-                  onClick={() => setShowBookCompletionStatus(!showBookCompletionStatus)}
-                  className="w-full px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                >
-                  {showBookCompletionStatus ? '권별 완독 현황 숨기기' : '권별 완독 현황 보기'}
-                </button>
-              </div>
-            )}
+  <div className="my-8 flex flex-col gap-3 items-center w-full max-w-md mx-auto">
+    {/* 권별 완독 현황 보기 버튼 */}
+    <button
+      onClick={() => setShowBookCompletionStatus(!showBookCompletionStatus)}
+      className="w-full h-14 px-6 text-lg font-bold tracking-tight bg-gradient-to-r from-blue-400 via-blue-300 to-sky-300 text-white rounded-2xl shadow-lg border border-blue-200 flex items-center justify-center gap-2 transition-transform duration-150 hover:scale-[1.04] hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-blue-300"
+    >
+      <span className="text-2xl mr-1">📚</span>
+      {showBookCompletionStatus ? '권별 완독 현황 숨기기' : '권별 완독 현황 보기'}
+    </button>
+    {/* 함께 걷는 여정 버튼 */}
+    <button
+      onClick={() => setCurrentView(currentView === 'LEADERBOARD' ? 'IDLE_SETUP' : 'LEADERBOARD')}
+      className={`w-full h-14 px-6 text-lg font-bold tracking-tight bg-gradient-to-r from-purple-500 via-fuchsia-400 to-pink-300 text-white rounded-2xl shadow-lg border border-purple-200 flex items-center justify-center gap-2 transition-transform duration-150 hover:scale-[1.04] hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-fuchsia-300 ${currentView === 'LEADERBOARD' ? 'ring-2 ring-fuchsia-400' : ''}`}
+    >
+      <span className="text-2xl mr-1">👣</span>
+      {currentView === 'LEADERBOARD' ? '함께 걷는 여정 숨기기' : '함께 걷는 여정 보기'}
+    </button>
+    {/* 명예의 전당 전체 보기 버튼 (아래로 이동) */}
+    <button
+      onClick={() => setShowHallOfFame(true)}
+      className="w-full h-14 px-6 text-lg font-bold tracking-tight bg-gradient-to-r from-yellow-300 via-amber-200 to-yellow-400 text-amber-900 rounded-2xl shadow-xl border-2 border-yellow-300 flex items-center justify-center gap-2 transition-transform duration-150 hover:scale-[1.04] hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-amber-300 drop-shadow-glow"
+      style={{ boxShadow: '0 0 16px 2px #ffe06655' }}
+    >
+      <span className="text-2xl mr-1">👑</span>
+      명예의 전당 전체 보기
+    </button>
+    {/* 다시 시작 버튼: 완독자+100%만 노출 */}
+    {(currentUser && (currentUser as any).completed_count > 0) && overallCompletedChaptersCount === totalBibleChapters && (
+      <button
+        disabled={bibleResetLoading}
+        onClick={async () => {
+          if (!window.confirm('정말로 다시 말씀 여정을 시작하시겠습니까?\n완독 횟수가 증가하고, 모든 진행률이 초기화됩니다.')) return;
+          setBibleResetLoading(true);
+          try {
+            const res = await fetch('/api/bible-reset', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ userId: currentUser.id }),
+            });
+            const data = await res.json();
+            if (data.success) {
+              alert(`다시 시작되었습니다! (완독 횟수: ${data.round})`);
+              window.location.reload();
+            } else {
+              alert('오류: ' + (data.error || '진행에 실패했습니다.'));
+            }
+          } catch (e) {
+            alert('서버 오류: 다시 시도해 주세요.');
+          } finally {
+            setBibleResetLoading(false);
+          }
+        }}
+        className="w-full h-14 px-6 text-lg font-bold tracking-tight bg-gradient-to-r from-white via-yellow-100 to-yellow-200 text-amber-700 rounded-2xl border-2 border-amber-300 shadow-xl mt-1 flex items-center justify-center gap-2 transition-transform duration-150 hover:scale-[1.04] hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-amber-300 drop-shadow-glow disabled:opacity-60"
+        style={{ boxShadow: '0 0 14px 2px #ffe06644' }}
+      >
+        <span className="text-2xl mr-1">⟳</span>
+        {bibleResetLoading ? '⏳ 진행 중...' : '다시 말씀 여정 시작하기'}
+      </button>
+    )}
+  </div>
+)}
 
             {/* Conditional Rendering for BookCompletionStatus component - MOVED HERE */}
             {currentUser && userOverallProgress && showBookCompletionStatus && (
@@ -783,29 +886,19 @@ const App: React.FC = () => {
               />
             )}
 
-            <div className="mt-6 text-center">
-              <button
-                onClick={() => setCurrentView('LEADERBOARD')}
-                className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-lg shadow-md transition duration-150 ease-in-out"
-              >
-                👣 함께 걷는 여정
-              </button>
-            </div>
+
           </>
+        )}
+
+        {/* Hall of Fame Modal */}
+        {showHallOfFame && (
+          <HallOfFame onClose={() => setShowHallOfFame(false)} />
         )}
 
         {readingState === ReadingState.IDLE && currentView === 'LEADERBOARD' && (
           <div className="my-4 p-4 bg-gray-50 rounded-lg shadow">
             <h3 className="text-xl font-semibold text-gray-800 mb-4 text-center">👣 함께 걷는 말씀의 발자취</h3>
             <Leaderboard key={userOverallProgress ? `lb-${userOverallProgress.lastReadBook}-${userOverallProgress.lastReadChapter}-${userOverallProgress.lastReadVerse}` : 'lb-no-progress'} />
-            <div className="mt-6 text-center">
-              <button
-                onClick={() => setCurrentView('IDLE_SETUP')}
-                className="px-6 py-3 bg-gray-500 hover:bg-gray-600 text-white font-semibold rounded-lg shadow-md transition duration-150 ease-in-out"
-              >
-                📖 읽기 설정으로 돌아가기
-              </button>
-            </div>
           </div>
         )}
 
@@ -822,6 +915,21 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="flex gap-4 mt-4">
+              <button
+                className="px-6 py-2 bg-gray-400 text-white rounded-lg font-bold hover:bg-gray-500 transition"
+                onClick={() => {
+                  // Reset session-specific state and go back to setup
+                  setReadingState(ReadingState.IDLE);
+                  setSessionTargetVerses([]);
+                  setCurrentVerseIndexInSession(0);
+                  setMatchedVersesContentForSession('');
+                  setSessionProgress(initialSessionProgress);
+                  setSessionCertificationMessage('');
+                  setTranscriptBuffer('');
+                }}
+              >
+                ← 뒤로가기
+              </button>
               <button
                 className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition"
                 onClick={() => setReadingState(ReadingState.LISTENING)}
