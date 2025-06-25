@@ -22,9 +22,75 @@ type RawBibleDataType = { [key: string]: string; };
 // Make Bible data available globally in this module, cast to our correct local type
 const bibleData: RawBibleDataType = rawBibleData as RawBibleDataType;
 
-// Helper to normalize text for matching (simple version)
+// Helper to normalize text for matching with improved number handling
 const normalizeText = (text: string): string => {
-  return text
+  console.log('[App.tsx] Original text before normalization:', text);
+  
+  // 음성 인식 결과에서 자주 발생하는 오류 수정
+  let processed = text
+    // 숫자 인식 오류 수정 (202호 -> 이백요, 22요 -> 이십이요)
+    .replace(/202\s*호/g, "이백요")
+    .replace(/202\s*요/g, "이백요")
+    .replace(/200\s*호/g, "이백요")
+    .replace(/200\s*요/g, "이백요")
+    .replace(/22\s*호/g, "이십이요")
+    .replace(/22\s*요/g, "이십이요")
+    .replace(/20\s*호/g, "이십요")
+    .replace(/20\s*요/g, "이십요");
+  
+  // 한글 숫자를 아라비아 숫자로 변환
+  processed = processed
+    // 한글 숫자 패턴 (일, 이, 삼, ...) 변환
+    .replace(/일/g, "1")
+    .replace(/이/g, "2")
+    .replace(/삼/g, "3")
+    .replace(/사/g, "4")
+    .replace(/오/g, "5")
+    .replace(/육/g, "6")
+    .replace(/칠/g, "7")
+    .replace(/팔/g, "8")
+    .replace(/구/g, "9")
+    .replace(/십/g, "10")
+    .replace(/백/g, "100")
+    .replace(/천/g, "1000")
+    .replace(/만/g, "10000");
+  
+  // 한글 숫자 복합형 처리 (예: 이백이십 -> 220)
+  processed = processed
+    // 백 단위 처리
+    .replace(/(\d+)100(\d+)10(\d+)/g, (_, p1, p2, p3) => String(Number(p1) * 100 + Number(p2) * 10 + Number(p3)))
+    .replace(/(\d+)100(\d+)/g, (_, p1, p2) => String(Number(p1) * 100 + Number(p2)))
+    .replace(/(\d+)100/g, (_, p1) => String(Number(p1) * 100))
+    // 십 단위 처리
+    .replace(/(\d+)10(\d+)/g, (_, p1, p2) => String(Number(p1) * 10 + Number(p2)))
+    .replace(/(\d+)10/g, (_, p1) => String(Number(p1) * 10));
+    
+  console.log('[App.tsx] After number normalization:', processed);
+    
+  // 안드로이드 기기에서 추가 처리
+  if (/Android/.test(navigator.userAgent)) {
+    // 안드로이드에서 숫자 인식 문제 해결을 위한 추가 처리
+    processed = processed
+      // 숫자 앞뒤 공백 제거 (안드로이드 음성인식 특성)
+      .replace(/(\d+)\s+장/g, "$1장")
+      .replace(/(\d+)\s+절/g, "$1절")
+      // 숫자 사이 공백 제거 (예: "2 3" -> "23")
+      .replace(/(\d+)\s+(\d+)/g, "$1$2")
+      // "이십이 장" 형태 처리
+      .replace(/이십(\d+)\s*장/g, "2$1장")
+      .replace(/삼십(\d+)\s*장/g, "3$1장")
+      .replace(/사십(\d+)\s*장/g, "4$1장")
+      .replace(/오십(\d+)\s*장/g, "5$1장")
+      // "이십이 절" 형태 처리
+      .replace(/이십(\d+)\s*절/g, "2$1절")
+      .replace(/삼십(\d+)\s*절/g, "3$1절")
+      .replace(/사십(\d+)\s*절/g, "4$1절")
+      .replace(/오십(\d+)\s*절/g, "5$1절");
+      
+    console.log(`[App.tsx] Android specific processing for: "${text}" -> "${processed}"`);
+  }
+  
+  return processed
     .toLowerCase()
     // eslint-disable-next-line no-irregular-whitespace
     .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?　]/g, "") // remove punctuation, including full-width space
@@ -34,6 +100,7 @@ const normalizeText = (text: string): string => {
 const FUZZY_MATCH_LOOKBACK_FACTOR = 1.3; // 1.8에서 하향 조정. 이전 절 텍스트가 비교에 포함되는 것을 방지 
 const FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT = 60; // 기본값
 const FUZZY_MATCH_SIMILARITY_THRESHOLD_DIFFICULT = 50; // 어려운 단어 포함시
+const FUZZY_MATCH_SIMILARITY_THRESHOLD_ANDROID = 40; // 안드로이드 기기에서 더 낮은 임계값 적용 (45에서 40으로 더 낮춤)
 const MINIMUM_READ_LENGTH_RATIO = 0.9; // 항상 동일하게 적용
 const ABSOLUTE_READ_DIFFERENCE_THRESHOLD = 5; // Or be within 5 characters of the end
 
@@ -111,10 +178,16 @@ const App: React.FC = () => {
   const [startVerseForSelector, setStartVerseForSelector] = useState<number>(1);
   const [showBookCompletionStatus, setShowBookCompletionStatus] = useState(false);
 
-  // iOS 기기 감지
+  // Helper to detect device platforms
   const isIOS = useMemo(() => {
-    return /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    return /iPad|iPhone|iPod/.test(navigator.userAgent);
   }, []);
+
+  const isAndroid = useMemo(() => {
+    return /Android/.test(navigator.userAgent);
+  }, []);
+
+  console.log(`[App.tsx] Device detection: iOS=${isIOS}, Android=${isAndroid}`);
 
   const { 
     isListening, 
@@ -346,8 +419,14 @@ const App: React.FC = () => {
 
     // 절별 난이도 체크 (어려운 단어 포함시 임계치 완화)
     const isDifficult = containsDifficultWord(currentTargetVerseForSession.text);
-    const similarityThreshold = isDifficult ? FUZZY_MATCH_SIMILARITY_THRESHOLD_DIFFICULT : FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT;
-
+    let similarityThreshold = isDifficult ? FUZZY_MATCH_SIMILARITY_THRESHOLD_DIFFICULT : FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT;
+      
+    // 안드로이드 기기에서는 더 낮은 임계값 적용
+    if (/Android/.test(navigator.userAgent)) {
+      similarityThreshold = FUZZY_MATCH_SIMILARITY_THRESHOLD_ANDROID;
+      console.log(`[App.tsx] Using Android specific similarity threshold: ${similarityThreshold}`);
+    }
+      
     const isLengthSufficientByRatio = bufferPortionToCompare.length >= normalizedTargetVerseText.length * MINIMUM_READ_LENGTH_RATIO;
     const isLengthSufficientByAbsoluteDiff = (normalizedTargetVerseText.length - bufferPortionToCompare.length) <= ABSOLUTE_READ_DIFFERENCE_THRESHOLD && bufferPortionToCompare.length > 0;
 
@@ -356,6 +435,17 @@ const App: React.FC = () => {
     if (similarity >= similarityThreshold && (isLengthSufficientByRatio || isLengthSufficientByAbsoluteDiff)) {
       console.log(`[App.tsx] Verse matched! Index: ${currentVerseIndexInSession}, Target length: ${sessionTargetVerses.length}`);
       setMatchedVersesContentForSession(prev => prev + `${currentTargetVerseForSession.book} ${currentTargetVerseForSession.chapter}:${currentTargetVerseForSession.verse} - ${currentTargetVerseForSession.text}\n`);
+      
+      // 구절 일치 시 음성 인식 텍스트 초기화 (특히 iOS에서 이전 인식 결과가 남는 문제 해결)
+      console.log('[App.tsx] Starting transcript reset process after verse match');
+      setTranscriptBuffer('');
+      
+      // 음성 인식 초기화를 위해 약간의 지연 후 resetTranscript 호출
+      // 이는 현재 진행 중인 인식 처리가 완료되고 다음 구절을 준비할 시간을 주기 위함
+      setTimeout(() => {
+        resetTranscript();
+        console.log('[App.tsx] Forced transcript reset after verse match');
+      }, 50);
       
       const newTotalCompletedInSelection = currentVerseIndexInSession + 1; // Count from start of selection array
       
@@ -446,18 +536,51 @@ const App: React.FC = () => {
               });
         } // This closes: if (currentUser && versesReadCountThisSession > 0)
       } else { // This is the 'else' for: if (newTotalCompletedInSelection >= sessionTargetVerses.length)
-         setCurrentVerseIndexInSession(prevIdx => prevIdx + 1); // 다음 절로 이동
-
-         setTranscriptBuffer(''); // Clear buffer for next verse
+         // 자동 저장 기능 추가: 한 절을 완료할 때마다 진행 상황 저장
+         if (currentUser && userOverallProgress) {
+           // 현재까지 읽은 절 정보 저장
+           const lastCompletedVerse = sessionTargetVerses[currentVerseIndexInSession];
+           
+           // 진행 상황 업데이트
+           const updatedProgress: UserProgress = {
+             ...userOverallProgress,
+             lastReadBook: lastCompletedVerse.book,
+             lastReadChapter: lastCompletedVerse.chapter,
+             lastReadVerse: lastCompletedVerse.verse
+           };
+           
+           // 서버에 저장
+           console.log('[App.tsx] Auto-saving progress after completing verse:', 
+             `${lastCompletedVerse.book} ${lastCompletedVerse.chapter}:${lastCompletedVerse.verse}`);
+           progressService.saveUserProgress(currentUser.username, updatedProgress)
+             .then(() => {
+               // 로컬 상태 업데이트
+               setUserOverallProgress(updatedProgress);
+             })
+             .catch(err => {
+               console.error('[App.tsx] Error auto-saving progress:', err);
+             });
+         }
+                  // 다음 절로 이동 및 음성 인식 초기화를 먼저 수행 (데이터베이스 업데이트와 독립적으로 진행)
+          console.log('[App.tsx] Moving to next verse and resetting recognition BEFORE database update completes');
+          setCurrentVerseIndexInSession(prevIdx => prevIdx + 1); // 다음 절로 이동
+          
+          // 음성 인식 초기화를 데이터베이스 업데이트보다 먼저 실행
+          setTranscriptBuffer(''); // Clear buffer for next verse
+          
+          // iOS와 일반 기기에 대한 초기화 로직 개선
+          // 음성 인식 초기화를 위한 더 확실한 방법 사용
+          console.log('[App.tsx] Forcing recognition reset for next verse');
+          resetTranscript(); // 트랜스크립트 초기화 (개선된 resetTranscript 함수 사용)
+          
+          // iOS에서는 추가적인 조치 필요
           if (isIOS) {
-            console.log('[App.tsx] iOS - Restarting speech recognition for next verse using retry mechanism');
-            // 다시읽기 버튼과 동일한 로직 사용
-            setTranscriptBuffer(''); // 버퍼 초기화
-            resetTranscript(); // 트랜스크립트 초기화
-            stopListening(); // 음성 인식 중지
-            setIsRetryingVerse(true); // 이 플래그가 useEffect에서 마이크를 다시 켜도록 함
-          } else {
-            resetTranscript(); // 비iOS 기기에서는 단순히 초기화만
+            console.log('[App.tsx] iOS - Additional reset measures for next verse');
+            // 잠시 후 다시 시작하는 메커니즘 사용
+            setTimeout(() => {
+              stopListening(); // 음성 인식 중지
+              setIsRetryingVerse(true); // 이 플래그가 useEffect에서 마이크를 다시 케도록 함
+            }, 100);
           }
       }
     }
@@ -965,7 +1088,7 @@ const App: React.FC = () => {
                     다시 읽기
                   </button>
                 </div>
-                <p className="mt-3 text-xs text-center text-gray-600">※ 읽기를 마치면 '중지' 버튼을 눌러야 진행 상황이 저장됩니다.</p>
+                <p className="mt-3 text-xs text-center text-gray-600">※ 각 절을 읽을 때마다 자동으로 진행 상황이 저장됩니다. 읽기를 중단하려면 '중지' 버튼을 누르세요.</p>
               </>
             )}
             {readingState === ReadingState.SESSION_COMPLETED && (

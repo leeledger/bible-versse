@@ -199,20 +199,36 @@ const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): UseSpeechR
     }
   }, [isListening]);
 
+  // 음성 인식 텍스트를 강제로 초기화하는 함수
   const resetTranscript = useCallback(() => {
     setTranscript('');
     
-    // iOS 기기에서만 참조 변수 초기화
-    if (isIOS) {
-      finalTranscriptRef.current = '';
-      lastInterimRef.current = '';
-      // iOS에서 절 변경 시 늦게 도착하는 인식 결과를 무시하기 위해 플래그 설정
-      ignoreResultsRef.current = true;
-      console.log('[useSpeechRecognition] iOS - Transcript reset with ignoreResults flag');
+    // 모든 기기에서 참조 변수 초기화
+    finalTranscriptRef.current = '';
+    lastInterimRef.current = '';
+    ignoreResultsRef.current = true;
+    
+    // 현재 인식이 진행 중이면 잠시 중지하고 다시 시작하여 인식 결과를 초기화
+    if (isListening && recognitionRef.current) {
+      try {
+        console.log('[useSpeechRecognition] Force resetting recognition by stop/start cycle');
+        // 현재 인식 중지
+        recognitionRef.current.stop();
+        
+        // 잠시 후 다시 시작 (onend 이벤트가 자동으로 호출되며 새로운 인식 세션 시작)
+        setTimeout(() => {
+          if (recognitionRef.current && isListening) {
+            recognitionRef.current.start();
+            console.log('[useSpeechRecognition] Recognition restarted after reset');
+          }
+        }, 100);
+      } catch (e) {
+        console.error('[useSpeechRecognition] Error during force reset:', e);
+      }
     } else {
-      console.log('[useSpeechRecognition] Non-iOS - Transcript reset');
+      console.log('[useSpeechRecognition] Transcript reset (not listening)');
     }
-  }, [isIOS]);
+  }, [isIOS, isListening]);
 
   return { isListening, transcript, error, startListening, stopListening, browserSupportsSpeechRecognition, resetTranscript };
 };
