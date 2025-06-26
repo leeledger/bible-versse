@@ -1,3 +1,9 @@
+import { DIFFICULT_WORDS } from "./difficult_words_back";
+
+export function containsDifficultWord(text: string): boolean {
+  return DIFFICULT_WORDS.some(word => text.includes(word));
+}
+
 // Utility functions
 
 /**

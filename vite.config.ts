@@ -5,6 +5,11 @@ import react from '@vitejs/plugin-react';
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
+  
+  // 환경에 따른 백엔드 타겟 설정
+  const isTest = env.NODE_ENV === 'test';
+  const backendTarget = isTest ? 'http://backend-test:3001' : 'http://backend:3001';
+  console.log(`Using backend target: ${backendTarget} for environment: ${env.NODE_ENV}`);
 
   return {
     plugins: [react()],
@@ -17,9 +22,8 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: {
         '/api': {
-          target: 'http://backend:3001', // Use the docker service name
+          target: backendTarget, // Use the appropriate docker service name based on environment
           changeOrigin: true,
-
         },
       },
     },
@@ -30,9 +34,8 @@ export default defineConfig(({ mode }) => {
       allowedHosts: ['robotncoding.synology.me'],
       proxy: {
         '/api': {
-          target: 'http://backend:3001', // Use the docker service name
+          target: backendTarget, // Use the appropriate docker service name based on environment
           changeOrigin: true,
-
         },
       },
     },
