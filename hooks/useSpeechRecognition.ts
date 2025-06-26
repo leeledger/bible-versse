@@ -65,51 +65,62 @@ const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): UseSpeechR
     recognition.lang = lang;
 
     recognition.onresult = (event: ISpeechRecognitionEvent) => {
-      // iOS 기기에서만 결과 무시 플래그 적용 (절 변경 시)
+      // iOS에서 ignoreResultsRef가 true면 결과 무시
       if (isIOS && ignoreResultsRef.current) {
-        console.log('[useSpeechRecognition] iOS - Ignoring late results during verse transition');
+        console.log('[useSpeechRecognition] iOS - Ignoring results during transition');
         return;
       }
-      
-      // iOS 기기에서는 중복 방지 로직 적용
+
+      let interimTranscript = '';
+      let finalTranscript = '';
+      let hasFinalResult = false;
+
+      // Combine all results
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const transcript = result[0].transcript;
+        if (result.isFinal) {
+          finalTranscript += transcript;
+          hasFinalResult = true;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      console.log(`[useSpeechRecognition] onresult - hasFinal: ${hasFinalResult}, final: "${finalTranscript}", interim: "${interimTranscript}"`);
+
+      // iOS에서는 finalTranscript와 interimTranscript를 분리하여 처리
       if (isIOS) {
-        let interimTranscript = '';
+        if (hasFinalResult) {
+          // Final 결과가 있을 때만 finalTranscriptRef 업데이트
+          finalTranscriptRef.current += finalTranscript;
+          lastInterimRef.current = '';
+          console.log('[useSpeechRecognition] iOS - Final update:', finalTranscriptRef.current);
+        } 
         
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const transcript = event.results[i][0].transcript;
-          
-          if (event.results[i].isFinal) {
-            // 이미 동일한 내용이 최종 트랜스크립트에 있는지 확인
-            if (!finalTranscriptRef.current.endsWith(transcript)) {
-              finalTranscriptRef.current += transcript;
-            }
-          } else {
-            interimTranscript += transcript;
-          }
+        // 항상 현재 트랜스크립트 업데이트 (final + interim)
+        const newTranscript = finalTranscriptRef.current + interimTranscript;
+        setTranscript(newTranscript);
+        
+        // Interim 결과가 있으면 lastInterimRef 업데이트
+        if (interimTranscript) {
+          lastInterimRef.current = interimTranscript;
+          console.log('[useSpeechRecognition] iOS - Interim update:', interimTranscript);
         }
-        
-        // 이전 임시 결과와 현재 임시 결과가 유사하면 중복 방지
-        if (interimTranscript && lastInterimRef.current && 
-            (interimTranscript.includes(lastInterimRef.current) || 
-             lastInterimRef.current.includes(interimTranscript))) {
-          // 더 긴 버전을 유지
-          interimTranscript = interimTranscript.length > lastInterimRef.current.length ? 
-                              interimTranscript : lastInterimRef.current;
-        }
-        
-        lastInterimRef.current = interimTranscript;
-        setTranscript(finalTranscriptRef.current + interimTranscript);
-        console.log('[useSpeechRecognition] iOS - Final:', finalTranscriptRef.current);
-        console.log('[useSpeechRecognition] iOS - Interim:', interimTranscript);
       } 
-      // 일반 기기(안드로이드 등)에서는 기존 로직 유지
+      // 안드로이드 등의 다른 기기
       else {
-        let fullInterim = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          fullInterim += event.results[i][0].transcript;
+        // 안드로이드에서는 최종 결과가 있으면 그것만, 아니면 임시 결과 사용
+        const newTranscript = hasFinalResult ? finalTranscript : interimTranscript;
+        
+        // 기존 트랜스크립트와 새 트랜스크립트를 비교하여 더 긴 쪽을 사용
+        // 이렇게 하면 일시 정지 후에도 이전 내용이 유지됨
+        if (newTranscript.length > transcript.length) {
+          setTranscript(newTranscript);
+          console.log('[useSpeechRecognition] Android - Updated transcript:', newTranscript);
+        } else {
+          console.log('[useSpeechRecognition] Android - Keeping existing transcript (longer)');
         }
-        setTranscript(fullInterim);
-        console.log('[useSpeechRecognition] Non-iOS - Transcript:', fullInterim);
       }
       
       setError(null);
@@ -127,23 +138,53 @@ const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): UseSpeechR
     };
 
     recognition.onend = () => {
+      console.log('[useSpeechRecognition] onend triggered, intentionalStop:', intentionalStopRef.current);
+      
       // The 'onend' event fires when recognition stops for any reason.
-      // We check our ref to see if we stopped it intentionally.
       if (intentionalStopRef.current) {
         // If it was intentional, just update the state.
+        console.log('[useSpeechRecognition] Intentional stop, cleaning up');
         setIsListening(false);
         intentionalStopRef.current = false; // Reset for next session
       } else if (recognitionRef.current) {
-        // If it was NOT intentional (e.g., browser timeout on mobile),
-        // and we still have a recognition instance, try to restart it immediately.
-        try {
-          recognitionRef.current.start();
-          // We don't change isListening state, because we want it to seem continuous.
-        } catch (e) {
-          console.error('Error restarting speech recognition:', e);
-          // If restart fails, then we update the state.
-          setIsListening(false);
-        }
+        // If it was NOT intentional (e.g., pause in speech, browser timeout),
+        // and we still have a recognition instance, try to restart it.
+        console.log('[useSpeechRecognition] Unintentional stop, attempting to restart');
+        
+        // Preserve the current transcript before restarting
+        const currentTranscript = transcript;
+        
+        // Small delay before restarting to prevent rapid restarts
+        setTimeout(() => {
+          if (recognitionRef.current) {
+            try {
+              // For both iOS and Android, preserve the existing transcript
+              if (isIOS) {
+                // For iOS, update the final transcript ref
+                finalTranscriptRef.current = currentTranscript;
+                ignoreResultsRef.current = false;
+                console.log('[useSpeechRecognition] iOS - Restarting with preserved transcript:', currentTranscript);
+              } else {
+                // For Android, we'll set the transcript directly after restart
+                console.log('[useSpeechRecognition] Android - Restarting recognition');
+              }
+              
+              recognitionRef.current.start();
+              
+              // For Android, we need to restore the transcript after restart
+              if (!isIOS && currentTranscript) {
+                setTimeout(() => {
+                  setTranscript(currentTranscript);
+                  console.log('[useSpeechRecognition] Android - Restored transcript after restart');
+                }, 100);
+              }
+              
+            } catch (e) {
+              console.error('Error restarting speech recognition:', e);
+              setIsListening(false);
+            }
+          }
+        }, 100); // Small delay to prevent rapid restarts
       }
     };
 
@@ -218,10 +259,14 @@ const useSpeechRecognition = (options?: UseSpeechRecognitionOptions): UseSpeechR
         // 잠시 후 다시 시작 (onend 이벤트가 자동으로 호출되며 새로운 인식 세션 시작)
         setTimeout(() => {
           if (recognitionRef.current && isListening) {
+            // iOS에서는 의도적인 초기화 시에만 ignoreResultsRef를 true로 유지
+            if (isIOS) {
+              console.log('[useSpeechRecognition] iOS - Restarting with cleared transcript');
+            }
             recognitionRef.current.start();
             console.log('[useSpeechRecognition] Recognition restarted after reset');
           }
-        }, 100);
+        }, isIOS ? 150 : 100); // iOS에서는 지연 시간을 약간 늘림
       } catch (e) {
         console.error('[useSpeechRecognition] Error during force reset:', e);
       }
