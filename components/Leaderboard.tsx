@@ -8,6 +8,7 @@ interface UserDataForLeaderboard {
   username: string;
   progress: UserProgress; // UserProgress에는 lastProgressUpdateDate가 포함됨
   completionRate: number;
+  completed_count?: number; // 완독 횟수
 }
 
 interface LeaderboardEntry {
@@ -16,6 +17,7 @@ interface LeaderboardEntry {
   progressDisplay: string;
   completionRate: number;
   lastProgressUpdateDate?: string; // ISO string, UserProgress에서 가져옴
+  completed_count: number; // 완독 횟수
   // Raw progress for sorting
   book: string;
   chapter: number;
@@ -73,6 +75,7 @@ const Leaderboard: React.FC = () => {
             chapter: user.progress?.lastReadChapter || 0,
             verse: user.progress?.lastReadVerse || 0,
             lastProgressUpdateDate: user.progress?.lastProgressUpdateDate, // UserProgress에서 직접 가져옴
+            completed_count: user.completed_count || 0, // 완독 횟수
           };
         });
 
@@ -130,7 +133,15 @@ const Leaderboard: React.FC = () => {
                 `}>
                   {entry.rank}
                 </div>
-                <div className="font-bold text-lg text-indigo-900 flex-grow truncate">{entry.username}</div>
+                <div className="font-bold text-lg text-indigo-900 flex-grow truncate flex items-center gap-1">
+                  {entry.username}
+                  {entry.completed_count > 0 && (
+                    <span className="bg-gradient-to-r from-amber-400 to-yellow-300 text-amber-900 px-2 py-0.5 rounded-full text-xs font-bold shadow-sm border border-amber-300 ml-1 flex items-center">
+                      <span className="mr-0.5">🏆</span>
+                      <span>{entry.completed_count}</span>
+                    </span>
+                  )}
+                </div>
                 <div className="text-sm font-semibold bg-indigo-100 text-indigo-800 px-2 py-1 rounded-lg">
                   {entry.completionRate.toFixed(1)}%
                 </div>
@@ -191,7 +202,17 @@ const Leaderboard: React.FC = () => {
                       {entry.rank}
                     </div>
                   </td>
-                  <td className="py-4 px-4 font-medium text-gray-800">{entry.username}</td>
+                  <td className="py-4 px-4 font-medium text-gray-800">
+                    <div className="flex items-center gap-1">
+                      {entry.username}
+                      {entry.completed_count > 0 && (
+                        <span className="bg-gradient-to-r from-amber-400 to-yellow-300 text-amber-900 px-2 py-0.5 rounded-full text-xs font-bold shadow-sm border border-amber-300 ml-1 flex items-center">
+                          <span className="mr-0.5">🏆</span>
+                          <span>{entry.completed_count}</span>
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="py-4 px-4 text-gray-700">{entry.progressDisplay}</td>
                   <td className="py-4 px-4">
                     <div className="bg-indigo-100 text-indigo-800 px-2 py-1 rounded-lg inline-block font-medium">

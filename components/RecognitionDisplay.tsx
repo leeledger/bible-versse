@@ -1,5 +1,6 @@
 
 import React from 'react';
+import VerseFadeIn from './VerseFadeIn';
 import { BibleVerse } from '../types';
 
 interface RecognitionDisplayProps {
@@ -21,7 +22,10 @@ const RecognitionDisplay: React.FC<RecognitionDisplayProps> = ({
         <h3 className="text-lg font-semibold text-gray-700 mb-1">다음 구절 읽기:</h3>
         {currentVerseToRead ? (
           <p className="p-3 bg-blue-50 border border-blue-200 rounded-md text-blue-700 text-lg">
-            <span className="font-bold">{readingTarget}:</span> {currentVerseToRead.text}
+            <span className="font-bold">{readingTarget}:</span> <VerseFadeIn
+  key={currentVerseToRead.book + '-' + currentVerseToRead.chapter + '-' + currentVerseToRead.verse}
+  verseText={currentVerseToRead.text}
+/>
           </p>
         ) : (
           <p className="p-3 bg-gray-50 border border-gray-200 rounded-md text-gray-500">
