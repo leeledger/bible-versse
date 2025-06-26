@@ -8,7 +8,7 @@ const bcrypt = require('bcrypt');
 const saltRounds = 10; // For bcrypt hashing
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 // const DB_PATH = path.join(__dirname, 'database.json'); // No longer needed
 
 app.use(cors());
@@ -357,7 +357,8 @@ const query = `
     COALESCE(rp.last_read_chapter, 0) AS "lastReadChapter",
     COALESCE(rp.last_read_verse, 0) AS "lastReadVerse",
     rp.updated_at AS "lastProgressUpdateDate",
-    (SELECT COUNT(*) FROM completed_chapters cc WHERE cc.user_id = u.id) AS "completedChaptersCount"
+    (SELECT COUNT(*) FROM completed_chapters cc WHERE cc.user_id = u.id) AS "completedChaptersCount",
+    (SELECT COUNT(*) FROM hall_of_fame hf WHERE hf.user_id = u.id) AS "completed_count"
   FROM
     users u
   LEFT JOIN
@@ -374,11 +375,40 @@ res.status(500).json({ message: 'Error fetching users summary for leaderboard' }
 }
 });
 
+// Hall of Fame 엔드포인트 - 완독자 목록 조회
+app.get('/api/hall-of-fame', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT 
+        h.user_id, 
+        u.username, 
+        h.round, 
+        h.completed_at 
+      FROM 
+        hall_of_fame h 
+      JOIN 
+        users u ON h.user_id = u.id 
+      ORDER BY 
+        h.completed_at DESC
+    `);
+    
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching hall of fame data:', err);
+    res.status(500).json({ message: '명예의 전당 정보를 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
 const startServer = async () => {
-  await db.initializeDatabase(); // Initialize DB before starting the server
-  app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
-  });
+  try {
+    await db.initializeDatabase();
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Failed to initialize database:', err);
+    process.exit(1);
+  }
 };
 
 startServer().catch(err => {
