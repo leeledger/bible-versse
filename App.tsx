@@ -101,8 +101,8 @@ const FUZZY_MATCH_LOOKBACK_FACTOR = 1.3; // 1.8에서 하향 조정. 이전 절 
 const FUZZY_MATCH_SIMILARITY_THRESHOLD_DEFAULT = 60; // 기본값
 const FUZZY_MATCH_SIMILARITY_THRESHOLD_DIFFICULT = 50; // 어려운 단어 포함시
 const FUZZY_MATCH_SIMILARITY_THRESHOLD_ANDROID = 40; // 안드로이드 기기에서 더 낮은 임계값 적용 (45에서 40으로 더 낮춤)
-const MINIMUM_READ_LENGTH_RATIO = 0.9; // 항상 동일하게 적용
-const ABSOLUTE_READ_DIFFERENCE_THRESHOLD = 5; // Or be within 5 characters of the end
+const MINIMUM_READ_LENGTH_RATIO = 0.9; // 90% 이상은 꼭 읽어야 함
+const ABSOLUTE_READ_DIFFERENCE_THRESHOLD = 2; // 끝에서 2자까지만 빼고 읽어야 함 (5에서 2로 변경)
 
 const initialSessionProgress: SessionReadingProgress = {
   totalVersesInSession: 0,
